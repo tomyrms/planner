@@ -43,6 +43,10 @@ describe('assistant turns', () => {
       const scripted = provider as ScriptedProvider;
       expect(scripted.requests).toHaveLength(2);
       expect(scripted.requests[0]!.system).toContain(`Date du tour : ${TODAY} (mercredi), heure 18:42, fuseau ${ZONE}`);
+      // Weekday names resolve from a server-computed list of the next 14 dates.
+      expect(scripted.requests[0]!.system).toContain('Jours suivants : jeudi 2026-09-17, vendredi 2026-09-18,');
+      expect(scripted.requests[0]!.system).toContain('mercredi 2026-09-23, jeudi 2026-09-24, vendredi 2026-09-25,');
+      expect(scripted.requests[0]!.system).toContain('mercredi 2026-09-30.');
       expect(scripted.requests[0]!.tools.map((tool) => tool.name)).toContain('create_task');
       expect(JSON.stringify(scripted.requests[0]!.system)).not.toContain('garage');
 

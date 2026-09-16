@@ -148,7 +148,11 @@ export async function runCase(pool: pg.Pool, set: EvalSet, evalCase: EvalCase, o
         FROM tasks t WHERE t.user_id = $1 AND NOT (t.id = ANY($2::uuid[]))`, [userId, [...tasks.values()]]);
       if (rows.length !== expect.created.length) failures.push(`${rows.length} tasks created, expected ${expect.created.length}`);
       for (const wanted of expect.created) {
-        if (!rows.some((row) => matches(row, resolve(wanted) as Record<string, Json>))) failures.push(`no created task matches ${JSON.stringify(wanted)}`);
+        if (!rows.some((row) => matches(row, resolve(wanted) as Record<string, Json>))) {
+          // Fixture data only: showing what was created (same fields) makes a live mismatch diagnosable.
+          const seen = rows.map((row) => Object.fromEntries(Object.keys(wanted).map((key) => [key, row[key] ?? null])));
+          failures.push(`no created task matches ${JSON.stringify(wanted)} — created ${JSON.stringify(seen)}`);
+        }
       }
     }
     for (const name of expect.unchanged ?? []) {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "promptVersion": "assistant-v2",
+  "promptVersion": "assistant-v4",
   "description": "Assistant evaluation set (05_Project/02_Test_Strategy.md). Each case: setup tasks, the user message, provider-independent expectations, and a scripted model run used by the deterministic test. The live runner (npm run eval:assistant) sends the same message to the configured provider and checks only 'expect'. Symbols: $today, $tomorrow, $task:<name> (a setup task id).",
   "referenceInstant": "2026-09-16T18:42:00+02:00",
   "timeZone": "Europe/Zurich",
