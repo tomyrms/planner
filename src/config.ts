@@ -23,11 +23,22 @@ const environmentSchema = z.object({
   DEEPSEEK_BASE_URL: z.url().default('https://api.deepseek.com'),
   DEEPSEEK_THINKING: z.enum(['true', 'false']).default('false'),
   ASSISTANT_MONTHLY_TOKEN_BUDGET: z.coerce.number().int().min(0).default(3_000_000),
+  TRANSCRIPTION_PROVIDER: z.enum(['openai', 'simulated', 'disabled']).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_TRANSCRIPTION_MODEL: z.string().min(1).default('gpt-transcribe'),
+  OPENAI_BASE_URL: z.url().default('https://api.openai.com/v1'),
+  TRANSCRIPTION_MONTHLY_MINUTES: z.coerce.number().int().min(0).default(600),
+  AUDIO_DIR: z.string().min(1).optional(),
 });
 
 export type AssistantProviderConfig =
   | { kind: 'deepseek'; apiKey: string; model: string; baseUrl: string; thinking: boolean }
   | { kind: 'rules' }
+  | { kind: 'disabled' };
+
+export type TranscriptionProviderConfig =
+  | { kind: 'openai'; apiKey: string; model: string; baseUrl: string }
+  | { kind: 'simulated' }
   | { kind: 'disabled' };
 
 export interface AppConfig {
@@ -39,6 +50,7 @@ export interface AppConfig {
   auth: AuthConfig;
   minimumClientVersion: string;
   assistant: { provider: AssistantProviderConfig; monthlyTokenBudget: number };
+  voice: { provider: TranscriptionProviderConfig; monthlyMinutes: number; audioDir?: string };
 }
 
 export function loadConfig(): AppConfig {
@@ -60,6 +72,13 @@ export function loadConfig(): AppConfig {
   const provider: AssistantProviderConfig = providerKind === 'deepseek'
     ? { kind: 'deepseek', apiKey: env.DEEPSEEK_API_KEY!, model: env.DEEPSEEK_MODEL, baseUrl: env.DEEPSEEK_BASE_URL, thinking: env.DEEPSEEK_THINKING === 'true' }
     : { kind: providerKind };
+  // Same rule for voice: OpenAI with a key, the simulated transcript only outside production (ADR-030).
+  const voiceKind = env.TRANSCRIPTION_PROVIDER ?? (env.OPENAI_API_KEY ? 'openai' : env.NODE_ENV === 'production' ? 'disabled' : 'simulated');
+  if (voiceKind === 'openai' && !env.OPENAI_API_KEY) throw new Error('TRANSCRIPTION_PROVIDER=openai requires OPENAI_API_KEY.');
+  if (voiceKind === 'simulated' && env.NODE_ENV === 'production') throw new Error('The simulated transcription is not allowed in production.');
+  const voiceProvider: TranscriptionProviderConfig = voiceKind === 'openai'
+    ? { kind: 'openai', apiKey: env.OPENAI_API_KEY!, model: env.OPENAI_TRANSCRIPTION_MODEL, baseUrl: env.OPENAI_BASE_URL }
+    : { kind: voiceKind };
   return {
     environment: env.NODE_ENV,
     host: env.HOST,
@@ -68,6 +87,7 @@ export function loadConfig(): AppConfig {
     ...(env.DATABASE_ADMIN_URL ? { databaseAdminUrl: env.DATABASE_ADMIN_URL } : {}),
     minimumClientVersion: env.MIN_CLIENT_VERSION,
     assistant: { provider, monthlyTokenBudget: env.ASSISTANT_MONTHLY_TOKEN_BUDGET },
+    voice: { provider: voiceProvider, monthlyMinutes: env.TRANSCRIPTION_MONTHLY_MINUTES, ...(env.AUDIO_DIR ? { audioDir: env.AUDIO_DIR } : {}) },
     auth: {
       issuer: env.AUTH_ISSUER,
       apiAudience: env.AUTH_API_AUDIENCE,

@@ -92,6 +92,15 @@ async function withPool<T>(database: string, work: (pool: pg.Pool) => Promise<T>
   try { return await work(pool); } finally { await pool.end(); }
 }
 
+/** Read by /diagnostics (last successful backup); a failure to record never hides the backup outcome. */
+async function record(kind: 'backup' | 'backup_verify' | 'restore', outcome: 'succeeded' | 'failed', details: Record<string, unknown>): Promise<void> {
+  try {
+    await withPool(DATABASE, (pool) => pool.query('INSERT INTO maintenance_runs (kind, outcome, details) VALUES ($1, $2, $3)', [kind, outcome, details]));
+  } catch {
+    process.stderr.write('Journal de maintenance non écrit (base indisponible ?).\n');
+  }
+}
+
 async function create(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const stamp = backupStamp(new Date());
@@ -112,6 +121,7 @@ async function create(directory: string): Promise<void> {
     for (const file of [name, `${name}.sha256`, `planner-${stampOf}-globals.sql`]) await rm(join(directory, file), { force: true });
   }
   const size = (await stat(dump)).size;
+  await record('backup', 'succeeded', { file: basename(dump), bytes: size, pruned: pruned.length });
   process.stdout.write(`Sauvegarde créée : ${dump} (${Math.ceil(size / 1024)} Kio) + ${basename(globals)}\n`
     + `Lisibilité vérifiée (pg_restore --list), empreintes écrites. Anciennes sauvegardes supprimées : ${pruned.length}.\n`
     + 'À faire : copie chiffrée hors machine.\n');
@@ -132,11 +142,15 @@ async function verify(dump: string): Promise<void> {
         UNION ALL SELECT 'task_occurrences', count(*)::text FROM task_occurrences
         UNION ALL SELECT 'reminders', count(*)::text FROM reminders
         UNION ALL SELECT 'command_receipts', count(*)::text FROM command_receipts
+        UNION ALL SELECT 'conversations', count(*)::text FROM conversations
+        UNION ALL SELECT 'messages', count(*)::text FROM messages
+        UNION ALL SELECT 'transcriptions', count(*)::text FROM transcriptions
         UNION ALL SELECT 'server_meta', count(*)::text FROM server_meta`);
       const meta = result.rows.find((row) => row.table_name === 'server_meta');
       if (meta?.rows !== '1') throw new Error('server_meta restauré invalide');
       return result.rows.map((row) => `${row.table_name}=${row.rows}`).join(', ');
     });
+    await record('backup_verify', 'succeeded', { file: basename(dump) });
     process.stdout.write(`Restauration de test réussie dans une base temporaire : ${counts}. Migrations et empreintes vérifiées.\n`);
   } finally {
     await sql(`DROP DATABASE IF EXISTS ${scratch} WITH (FORCE)`);
@@ -176,7 +190,10 @@ async function restore(dump: string, globals: string | undefined, keepDevices: b
   const result = await withPool(DATABASE, async (pool) => {
     await migrate(pool);
     await provisionSync(pool, { ...defaultSyncProvisioning, replicationPassword, storagePassword });
-    return rotateGeneration(pool, { revokeDevices: !keepDevices });
+    const rotated = await rotateGeneration(pool, { revokeDevices: !keepDevices });
+    await pool.query("INSERT INTO maintenance_runs (kind, outcome, details) VALUES ('restore', 'succeeded', $1)",
+      [{ file: basename(dump), generation: rotated.generation, revokedDevices: rotated.revokedDevices }]);
+    return rotated;
   });
   process.stdout.write(`Base restaurée depuis ${basename(dump)}. Nouvelle génération serveur : ${result.generation}.\n`
     + `Appareils révoqués : ${result.revokedDevices}. Stockage PowerSync réinitialisé.\n`
@@ -195,8 +212,18 @@ async function main(): Promise<void> {
   });
   const [command, file] = positionals;
   if (values.help || !command) { process.stdout.write(`${usage}\n`); return; }
-  if (command === 'create' && positionals.length === 1) return create(values.dir ?? process.env.BACKUP_DIR ?? 'backups');
-  if (command === 'verify' && file && positionals.length === 2) return verify(file);
+  if (command === 'create' && positionals.length === 1) {
+    return create(values.dir ?? process.env.BACKUP_DIR ?? 'backups').catch(async (error: unknown) => {
+      await record('backup', 'failed', {});
+      throw error;
+    });
+  }
+  if (command === 'verify' && file && positionals.length === 2) {
+    return verify(file).catch(async (error: unknown) => {
+      await record('backup_verify', 'failed', { file: basename(file) });
+      throw error;
+    });
+  }
   if (command === 'restore' && file && positionals.length === 2) {
     if (!values.confirm) throw new Error('Restauration destructive : relancez avec --confirm.');
     return restore(file, values.globals, values['keep-devices'] ?? false);

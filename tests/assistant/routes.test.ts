@@ -173,6 +173,6 @@ describe('assistant HTTP routes and the five reference requests', () => {
       for (const operation of Object.values(built.openApi.paths[path] as Record<string, any>)) expect(operation.security).toEqual([{ bearerAuth: [] }]);
     }
     const ready = await built.app.inject({ method: 'GET', url: '/api/v1/health/ready' });
-    expect(ready.json()).toMatchObject({ assistant: 'rules:rules-v1' });
+    expect(ready.json()).toMatchObject({ assistant: 'configured' });
   });
 });

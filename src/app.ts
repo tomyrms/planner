@@ -1,9 +1,13 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import fastifyMultipart from '@fastify/multipart';
 import Fastify, { LogController, type FastifySchema, type RouteOptions } from 'fastify';
 import type { Pool } from 'pg';
 import { AssistantService, registerAssistantRoutes, type AssistantLimits, type ReasoningProvider } from './modules/assistant/index.js';
 import { registerAuthRoutes, type AuthConfig } from './modules/auth/index.js';
 import { registerExportRoutes } from './modules/export/index.js';
 import { registerSyncRoutes } from './modules/sync/index.js';
+import { MAX_AUDIO_BYTES, registerVoiceRoutes, VoiceService, type TranscriptionProvider, type VoiceLimits } from './modules/voice/index.js';
 import { registerErrorHandler } from './errors.js';
 
 export const DEFAULT_MINIMUM_CLIENT_VERSION = '0.1.0';
@@ -16,7 +20,8 @@ const liveSchema: FastifySchema = {
 const readyBody = {
   type: 'object', required: ['status', 'scope', 'database', 'sync'], additionalProperties: false,
   properties: {
-    assistant: { type: 'string' },
+    assistant: { enum: ['configured', 'disabled'], type: 'string' },
+    transcription: { enum: ['configured', 'disabled'], type: 'string' },
     status: { enum: ['ready', 'not_ready'], type: 'string' },
     scope: { const: 'backend-sync', type: 'string' },
     database: { enum: ['ready', 'unavailable'], type: 'string' },
@@ -32,6 +37,8 @@ export interface BuildAppOptions {
   exportIntervalMs?: number;
   /** Without a provider the assistant routes answer 503 ASSISTANT_UNAVAILABLE. */
   assistant?: { provider: ReasoningProvider | null; limits?: Partial<AssistantLimits>; clock?: () => Date };
+  /** Without a provider the transcription routes answer 503 TRANSCRIPTION_UNAVAILABLE. */
+  voice?: { provider: TranscriptionProvider | null; audioDir?: string; limits?: Partial<VoiceLimits>; clock?: () => Date };
 }
 
 export async function buildApp(options: BuildAppOptions) {
@@ -61,6 +68,8 @@ export async function buildApp(options: BuildAppOptions) {
     }
   });
   registerErrorHandler(app);
+  // Only the transcription route reads multipart bodies; its per-request limits are stricter still.
+  await app.register(fastifyMultipart, { limits: { fileSize: MAX_AUDIO_BYTES, files: 1, fields: 4, fieldSize: 100, parts: 5 } });
   app.addHook('onResponse', async (request, reply) => {
     request.log.info({ requestId: request.id, method: request.method, route: request.routeOptions.url ?? 'unmatched', status: reply.statusCode, durationMs: reply.elapsedTime }, 'Request completed');
   });
@@ -77,9 +86,21 @@ export async function buildApp(options: BuildAppOptions) {
     // Technical events only: identifiers, statuses, counts. Never prompts, arguments or notes.
     log: (event) => app.log.info(event, 'assistant'),
   });
-  const assistantName = options.assistant?.provider ? `${options.assistant.provider.name}:${options.assistant.provider.model}` : 'disabled';
+  // The readiness check is public: it says whether a provider is set, never which one (names go to /diagnostics).
+  const assistantState = options.assistant?.provider ? 'configured' : 'disabled';
   registerAssistantRoutes(app, {
     service: assistant, auth,
+    minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
+  });
+  const voice = new VoiceService(options.pool, options.voice?.provider ?? null, options.voice?.audioDir ?? join(tmpdir(), 'planner-audio'), {
+    ...(options.voice?.limits ? { limits: options.voice.limits } : {}),
+    ...(options.voice?.clock ? { clock: options.voice.clock } : {}),
+    log: (event) => app.log.info(event, 'voice'),
+  });
+  await voice.prepareDirectory();
+  const transcriptionState = options.voice?.provider ? 'configured' : 'disabled';
+  registerVoiceRoutes(app, {
+    service: voice, auth,
     minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
   });
   registerExportRoutes(app, {
@@ -95,18 +116,19 @@ export async function buildApp(options: BuildAppOptions) {
       const result = await options.pool.query<{ generation: string; sync_provisioned: boolean }>(
         "SELECT generation, EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'powersync') AS sync_provisioned FROM server_meta LIMIT 1");
       if (result.rowCount !== 1) throw new Error('Missing generation');
-      return { status: 'ready', scope: 'backend-sync', database: 'ready', sync: result.rows[0]!.sync_provisioned ? 'provisioned' : 'not_provisioned', assistant: assistantName };
+      return { status: 'ready', scope: 'backend-sync', database: 'ready', sync: result.rows[0]!.sync_provisioned ? 'provisioned' : 'not_provisioned', assistant: assistantState, transcription: transcriptionState };
     } catch {
-      return reply.code(503).send({ status: 'not_ready', scope: 'backend-sync', database: 'unavailable', sync: 'unknown', assistant: assistantName });
+      return reply.code(503).send({ status: 'not_ready', scope: 'backend-sync', database: 'unavailable', sync: 'unknown', assistant: assistantState, transcription: transcriptionState });
     }
   });
   await app.ready();
   return {
     app,
     assistant,
+    voice,
     openApi: {
       openapi: '3.1.0',
-      info: { title: 'Planner backend — étape 3', version: '0.3.0', description: 'Auth, santé, upload des commandes de synchronisation, export et assistant. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
+      info: { title: 'Planner backend — étape 3', version: '0.3.1', description: 'Auth, santé, upload des commandes de synchronisation, export, assistant et messages vocaux. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
       paths,
       components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
     },

@@ -25,6 +25,9 @@ export async function buildExport(pool: pg.Pool, userId: string, now: Date = new
     const occurrences = await read(`SELECT id, task_id, occurrence_key, status, completed_at,
         override_date::text, override_time::text, override_time_zone, successor_occurrence_key, created_at, updated_at
       FROM task_occurrences WHERE user_id = $1 ORDER BY task_id, occurrence_key`);
+    const conversations = await read(`SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = $1 ORDER BY created_at, id`);
+    const messages = await read(`SELECT id, conversation_id, seq::int AS seq, role, kind, text, original_transcript, transcription_id, revises_message_id, created_at
+      FROM messages WHERE user_id = $1 ORDER BY conversation_id, seq`);
     const reminders = await read(`SELECT id, task_id, occurrence_key, kind, offset_minutes, local_time::text,
         absolute_date::text, absolute_time::text, absolute_time_zone, state, deleted_at, created_at, updated_at
       FROM reminders WHERE user_id = $1 ORDER BY task_id, id`);
@@ -56,8 +59,15 @@ export async function buildExport(pool: pg.Pool, userId: string, now: Date = new
         absolute: row.absolute_date === null ? null : { date: row.absolute_date, time: row.absolute_time.slice(0, 5), timeZone: row.absolute_time_zone },
         state: row.state, deletedAt: iso(row.deleted_at), createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
       })),
-      // Filled by the assistant step (ADR-021); present now so the format does not change.
-      conversations: [] as unknown[],
+      // Conversations are kept until deleted (ADR-021); the audio never is.
+      conversations: conversations.map((conversation) => ({
+        id: conversation.id, title: conversation.title, createdAt: iso(conversation.created_at), updatedAt: iso(conversation.updated_at),
+        messages: messages.filter((message) => message.conversation_id === conversation.id).map((message) => ({
+          id: message.id, seq: message.seq, role: message.role, kind: message.kind, text: message.text,
+          originalTranscript: message.original_transcript, transcriptionId: message.transcription_id,
+          revisesMessageId: message.revises_message_id, createdAt: iso(message.created_at),
+        })),
+      })),
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);

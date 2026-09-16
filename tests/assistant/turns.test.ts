@@ -264,7 +264,7 @@ describe('assistant turns', () => {
       const { service } = assistantFor(db.pool, [reply('ok')]);
       await expect(service.submitTurn(me, { ...turnRequest('x'), userId: me.userId })).rejects.toMatchObject({ code: 'INVALID_REQUEST', statusCode: 400 });
       const voice = turnRequest('x');
-      await expect(service.submitTurn(me, { ...voice, message: { ...voice.message, transcriptionId: randomUUID() } })).rejects.toMatchObject({ code: 'TRANSCRIPTION_NOT_AVAILABLE' });
+      await expect(service.submitTurn(me, { ...voice, message: { ...voice.message, transcriptionId: randomUUID() } })).rejects.toMatchObject({ code: 'TRANSCRIPTION_UNKNOWN', statusCode: 422 });
       await expect(service.submitTurn(me, turnRequest('x', { referenceInstant: '2026-09-14T10:00:00Z' }))).rejects.toMatchObject({ code: 'INVALID_REFERENCE_INSTANT' });
       const corrected = turnRequest('x');
       await expect(service.submitTurn(me, { ...corrected, message: { ...corrected.message, revisesMessageId: randomUUID() } })).rejects.toMatchObject({ code: 'REVISED_MESSAGE_UNKNOWN' });

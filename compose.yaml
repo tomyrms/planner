@@ -44,6 +44,12 @@ services:
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       DEEPSEEK_THINKING: ${DEEPSEEK_THINKING:-false}
       ASSISTANT_MONTHLY_TOKEN_BUDGET: ${ASSISTANT_MONTHLY_TOKEN_BUDGET:-3000000}
+      TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-transcribe}
+      TRANSCRIPTION_MONTHLY_MINUTES: ${TRANSCRIPTION_MONTHLY_MINUTES:-600}
+      # Audio lives in the container's tmpfs only: never on a volume, never in a backup.
+      AUDIO_DIR: /tmp/planner-audio
     ports:
       - "127.0.0.1:4317:4317"
     volumes:

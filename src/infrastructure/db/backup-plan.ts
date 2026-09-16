@@ -4,8 +4,12 @@ export const DUMP_PATTERN = /^planner-(\d{8}T\d{6}Z)\.dump$/;
 /** Tables whose data must be present in every dump. PowerSync bucket storage is derived and never dumped. */
 export const REQUIRED_TABLES = [
   'planner_migrations', 'users', 'projects', 'tasks', 'task_occurrences', 'reminders',
-  'command_receipts', 'tombstones', 'server_meta', 'devices', 'auth_sessions',
+  'command_receipts', 'tombstones', 'server_meta', 'devices', 'auth_sessions', 'auth_refresh_tokens',
+  'conversations', 'messages', 'assistant_turns', 'assistant_proposals', 'ai_actions', 'assistant_undos',
+  'transcriptions', 'maintenance_runs',
 ] as const;
+/** Dumped too, but short-lived: losing them only cancels a pairing in progress. */
+export const TRANSIENT_TABLES = ['auth_pairing_secrets', 'auth_pair_rate_limits'] as const;
 
 export function backupStamp(now: Date): string {
   return now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');

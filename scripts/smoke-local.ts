@@ -1,7 +1,8 @@
 // Local end-to-end check against a running API (npm run smoke:local).
 // Uses the trusted console capability, then the public HTTP routes. Prints no secret or token.
-// Leaves trashed "[smoke]" tasks and one assistant conversation in the local database, as a real device would.
+// Leaves trashed "[smoke]" tasks and assistant conversations in the local database, as a real device would.
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/infrastructure/db/pool.js';
 import { AuthService } from '../src/modules/auth/index.js';
@@ -11,7 +12,7 @@ const config = loadConfig();
 const pool = createPool(config.databaseUrl);
 const steps: string[] = [];
 
-async function call(method: string, path: string, init: { body?: unknown; token?: string; clientVersion?: string } = {}): Promise<{ status: number; json: any }> {
+async function call(method: string, path: string, init: { body?: unknown; form?: FormData; token?: string; clientVersion?: string } = {}): Promise<{ status: number; json: any }> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -20,6 +21,7 @@ async function call(method: string, path: string, init: { body?: unknown; token?
       ...(init.clientVersion ? { 'x-client-version': init.clientVersion } : {}),
     },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    ...(init.form === undefined ? {} : { body: init.form }),
   });
   const text = await response.text();
   return { status: response.status, json: text ? JSON.parse(text) : null };
@@ -72,20 +74,43 @@ try {
   expectStatus('sync/mutations sans version', (await call('POST', '/api/v1/sync/mutations', { token, body: envelope })).status, 426);
   expectStatus('sync/mutations autre génération', (await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: { ...envelope, serverGeneration: randomUUID() } })).status, 409);
 
-  // Assistant: only with the deterministic stand-in, so that the smoke test never calls (nor pays) a real provider.
-  if (String(ready.json.assistant).startsWith('rules:')) {
+  // The public readiness check never names providers: the local .env (shared with Compose) says which ones run.
+  // Assistant and voice are exercised only with the deterministic stand-ins, never a paid provider.
+  const turnWith = async (label: string, text: string, transcriptionId: string | null) => {
     const turn = await call('POST', '/api/v1/assistant/turns', { token, clientVersion, body: {
       turnId: randomUUID(), conversationId: randomUUID(),
-      message: { id: randomUUID(), text: 'Demain rappelle-moi de [smoke] vérifier l’assistant vers 17h.', transcriptionId: null, revisesMessageId: null },
+      message: { id: randomUUID(), text, transcriptionId, revisesMessageId: null },
       referenceInstant: new Date().toISOString(), timeZone: 'Europe/Zurich', unsyncedAggregateIds: [], calendarContext: null,
     } });
-    expectStatus('assistant/turns', turn.status, 200);
+    expectStatus(label, turn.status, 200);
     if (turn.json.status !== 'completed' || turn.json.riskClass !== 'R1' || !turn.json.undo?.actionId) throw new Error(`Tour d'assistant inattendu : ${turn.json.status}/${turn.json.riskClass}`);
+    if (turn.json.messages[0].kind !== (transcriptionId ? 'voice' : 'text')) throw new Error('Type de message inattendu');
     const undo = await call('POST', `/api/v1/assistant/actions/${turn.json.undo.actionId}/undo`, { token, clientVersion, body: { undoRequestId: randomUUID() } });
-    expectStatus('assistant undo', undo.status, 200);
+    expectStatus(`${label} undo`, undo.status, 200);
     if (undo.json.outcome !== 'undone') throw new Error('Undo non appliqué');
+  };
+  if (config.assistant.provider.kind === 'rules') {
+    if (ready.json.assistant !== 'configured') throw new Error('Assistant non configuré côté API');
+    await turnWith('assistant/turns', 'Demain rappelle-moi de [smoke] vérifier l’assistant vers 17h.', null);
   } else {
-    steps.push(`assistant (${ready.json.assistant}) non testé : fournisseur réel`);
+    steps.push(`assistant (${config.assistant.provider.kind}) non testé : fournisseur réel ou désactivé`);
+  }
+  if (config.voice.provider.kind === 'simulated') {
+    if (ready.json.transcription !== 'configured') throw new Error('Transcription non configurée côté API');
+    const transcriptionId = randomUUID();
+    const form = new FormData();
+    form.append('transcriptionId', transcriptionId);
+    form.append('durationMs', '3000');
+    form.append('audio', new Blob([new Uint8Array(await readFile(new URL('../tests/fixtures/audio/tone-3s-mono.m4a', import.meta.url)))], { type: 'audio/mp4' }), 'message.m4a');
+    const voice = await call('POST', '/api/v1/assistant/transcriptions', { token, clientVersion, form });
+    expectStatus('assistant/transcriptions', voice.status, 200);
+    if (voice.json.status !== 'completed' || !voice.json.audioDeleted || !String(voice.json.text).includes('[voix simulée]')) {
+      throw new Error(`Transcription inattendue : ${voice.json.status}`);
+    }
+    expectStatus('assistant/transcriptions sans jeton', (await call('POST', '/api/v1/assistant/transcriptions', { clientVersion, form })).status, 401);
+    await turnWith('assistant/turns vocal', voice.json.text, transcriptionId);
+  } else {
+    steps.push(`voix (${config.voice.provider.kind}) non testée : fournisseur réel ou désactivé`);
   }
 
   expectStatus('auth/logout', (await call('POST', '/api/v1/auth/logout', { token: rotated.json.accessToken })).status, 200);

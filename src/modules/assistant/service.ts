@@ -118,6 +118,13 @@ async function appendMessage(client: pg.PoolClient, userId: string, conversation
   return message.id;
 }
 
+/** The text goes with the history; the row stays so that deleting history never refunds transcribed minutes. */
+async function deleteUnusedTranscriptions(client: pg.PoolClient, userId: string, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await client.query(`UPDATE transcriptions t SET status = 'erased', text = NULL, languages = '{}', completed_at = NULL, error_code = NULL
+    WHERE t.user_id = $1 AND t.id = ANY($2::uuid[]) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.transcription_id = t.id)`, [userId, ids]);
+}
+
 /** Snapshot-and-journal hooks shared by turn application, confirmation and Undo. */
 function journalHooks(userId: string) {
   const previews: PreviewItem[] = [];
@@ -172,9 +179,6 @@ export class AssistantService {
     const parsed = turnRequestSchema.safeParse(input);
     if (!parsed.success) throw new AssistantError('INVALID_REQUEST', 400, 'Invalid request.');
     const request = parsed.data;
-    if (request.message.transcriptionId !== null) {
-      throw new AssistantError('TRANSCRIPTION_NOT_AVAILABLE', 422, 'Voice transcription is not available yet.');
-    }
     const now = this.clock();
     const age = now.getTime() - Date.parse(request.referenceInstant);
     if (age > this.limits.referenceMaxAgeMs || age < -5 * 60_000) throw new AssistantError('INVALID_REFERENCE_INSTANT', 400, 'Invalid request.');
@@ -203,6 +207,15 @@ export class AssistantService {
       if ((await client.query('SELECT 1 FROM messages WHERE id = $1', [messageId])).rowCount) {
         throw new AssistantError('IDEMPOTENCY_KEY_REUSED', 409, 'This message identifier was already used.');
       }
+      // A voice message carries its transcription; a corrected text keeps the original transcript.
+      const transcriptionId = request.message.transcriptionId?.toLowerCase() ?? null;
+      let originalTranscript: string | null = null;
+      if (transcriptionId !== null) {
+        const { rows: [transcription] } = await client.query('SELECT status, text FROM transcriptions WHERE id = $1 AND user_id = $2', [transcriptionId, identity.userId]);
+        if (!transcription || transcription.status === 'erased') throw new AssistantError('TRANSCRIPTION_UNKNOWN', 422, 'Unknown transcription.');
+        if (transcription.status !== 'completed') throw new AssistantError('TRANSCRIPTION_NOT_READY', 422, 'The transcription is not ready.');
+        if (transcription.text !== request.message.text) originalTranscript = transcription.text;
+      }
       const revises = request.message.revisesMessageId?.toLowerCase() ?? null;
       if (revises !== null) {
         const original = await client.query("SELECT 1 FROM messages WHERE id = $1 AND user_id = $2 AND conversation_id = $3 AND role = 'user'", [revises, identity.userId, conversationId]);
@@ -229,9 +242,11 @@ export class AssistantService {
         await client.query("UPDATE assistant_turns SET status = 'completed', finished_at = $2 WHERE id = ANY($1::uuid[]) AND status = 'awaiting_confirmation'",
           [superseded.rows.map((row) => row.turn_id), now]);
       }
-      await client.query(`INSERT INTO messages (id, user_id, conversation_id, seq, role, kind, text, turn_id, revises_message_id)
-        SELECT $1, $2, $3, COALESCE(max(seq), 0) + 1, 'user', 'text', $4, $5, $6 FROM messages WHERE conversation_id = $3`,
-      [messageId, identity.userId, conversationId, request.message.text, turnId, revises]);
+      await client.query(`INSERT INTO messages (id, user_id, conversation_id, seq, role, kind, text, turn_id, revises_message_id,
+          transcription_id, original_transcript)
+        SELECT $1, $2, $3, COALESCE(max(seq), 0) + 1, 'user', $7, $4, $5, $6, $8, $9 FROM messages WHERE conversation_id = $3`,
+      [messageId, identity.userId, conversationId, request.message.text, turnId, revises,
+        transcriptionId === null ? 'text' : 'voice', transcriptionId, originalTranscript]);
       await client.query(`INSERT INTO assistant_turns (id, user_id, device_id, conversation_id, user_message_id, request_hash,
           reference_instant, time_zone, unsynced_aggregate_ids, calendar_context, provider, model)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -851,13 +866,21 @@ export class AssistantService {
     const id = conversationId.toLowerCase();
     const { rows } = await this.pool.query('SELECT id FROM assistant_turns WHERE conversation_id = $1 AND user_id = $2', [id, identity.userId]);
     for (const turn of rows) this.running.get(turn.id)?.abort.abort();
-    const deleted = await this.pool.query('DELETE FROM conversations WHERE id = $1 AND user_id = $2', [id, identity.userId]);
-    if (!deleted.rowCount) throw new AssistantError('CONVERSATION_NOT_FOUND', 404, 'Unknown conversation.');
+    // Messages, turns, proposals and the transcriptions they used go together (ADR-021); tasks stay.
+    await transaction(this.pool, async (client) => {
+      const voice = await client.query<{ id: string }>('SELECT DISTINCT transcription_id AS id FROM messages WHERE conversation_id = $1 AND user_id = $2 AND transcription_id IS NOT NULL', [id, identity.userId]);
+      const deleted = await client.query('DELETE FROM conversations WHERE id = $1 AND user_id = $2', [id, identity.userId]);
+      if (!deleted.rowCount) throw new AssistantError('CONVERSATION_NOT_FOUND', 404, 'Unknown conversation.');
+      await deleteUnusedTranscriptions(client, identity.userId, voice.rows.map((row) => row.id));
+    });
   }
 
   async deleteMessage(identity: Identity, messageId: string): Promise<void> {
-    const deleted = await this.pool.query('DELETE FROM messages WHERE id = $1 AND user_id = $2', [messageId.toLowerCase(), identity.userId]);
-    if (!deleted.rowCount) throw new AssistantError('MESSAGE_NOT_FOUND', 404, 'Unknown message.');
+    await transaction(this.pool, async (client) => {
+      const deleted = await client.query<{ transcription_id: string | null }>('DELETE FROM messages WHERE id = $1 AND user_id = $2 RETURNING transcription_id', [messageId.toLowerCase(), identity.userId]);
+      if (!deleted.rowCount) throw new AssistantError('MESSAGE_NOT_FOUND', 404, 'Unknown message.');
+      await deleteUnusedTranscriptions(client, identity.userId, deleted.rows.flatMap((row) => row.transcription_id ? [row.transcription_id] : []));
+    });
   }
 
   // ---------------------------------------------------------------- maintenance

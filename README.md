@@ -1,6 +1,6 @@
 # Planner — backend
 
-Backend du planner iPhone (étapes 1 à 3 de la roadmap : temps, fixtures partagées, PostgreSQL, appairage, upload des commandes, PowerSync auto-hébergé, export, sauvegarde, assistant). Règles : `AGENTS.md` et `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md`. Décisions d'implémentation : ADR-027 à ADR-029.
+Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la voix : temps, fixtures partagées, PostgreSQL, appairage, upload des commandes, PowerSync auto-hébergé, export, sauvegarde, assistant, transcription). Règles : `AGENTS.md` et `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md`. Décisions d'implémentation : ADR-027 à ADR-030.
 
 ## Ce qui existe
 
@@ -13,13 +13,14 @@ Backend du planner iPhone (étapes 1 à 3 de la roadmap : temps, fixtures partag
 | `src/modules/domain` | Dérivés partagés : colonnes temporelles, bases de rappel, texte de recherche normalisé. |
 | `src/modules/assistant` | Tours durables (`/api/v1/assistant/*`, JSON ou SSE), outils du catalogue v1, plan appliqué par l'exécuteur de commandes, politique R0–R3, propositions, Undo groupé, fournisseurs scripté, à règles et DeepSeek. |
 | `fixtures/assistant` | Jeu d'évaluation versionné (24 cas) : test déterministe et évaluation réelle. |
+| `src/modules/voice` | `/api/v1/assistant/transcriptions` (multipart) : contrôle du conteneur M4A, transcription OpenAI `gpt-transcribe` ou simulée, essais, plafonds, abandon, nettoyage de l'audio. |
 | `src/modules/export` | `GET /api/v1/export` : archive JSON versionnée, instantané cohérent, un export par minute par appareil. |
 | `src/modules/auth` | Appairage depuis la console, rotation des refresh tokens, jeton de sync, déconnexion, JWKS. |
-| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0005). |
+| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0006). |
 | `powersync/` | Configuration du service PowerSync et Sync Streams (lecture seule, filtrée par utilisateur). |
 | `src/infrastructure/db` | Runner de migrations, provisionnement PowerSync, règles de sauvegarde, rotation de génération. |
 
-Pas encore : voix (transcription), `GET /diagnostics`, purge planifiée, import d'un export, client iPhone. L'adaptateur DeepSeek n'a jamais appelé le vrai service (pas de clé).
+Pas encore : `GET /diagnostics`, purge planifiée, import d'un export (avant l'étape 9), client iPhone. Les adaptateurs DeepSeek et OpenAI n'ont jamais appelé le vrai service (pas de clé).
 
 ## Démarrer (Windows)
 
@@ -38,7 +39,7 @@ Pile complète dans Docker (API sur 127.0.0.1:4317, PowerSync sur 127.0.0.1:4318
 
 ```powershell
 docker compose --profile app up -d --build --wait
-.\scripts\npm-local.ps1 run smoke:local       # auth, upload de commandes, rejeu, 426, 409, tour d'assistant et Undo
+.\scripts\npm-local.ps1 run smoke:local       # auth, upload de commandes, rejeu, 426, 409, tours texte et vocal, Undo
 .\scripts\npm-local.ps1 run spike:powersync   # client PowerSync Node : critères ADR-004 n° 2, 3, 5, 6, 7, 8
 ```
 
@@ -46,14 +47,21 @@ Le spike appaire puis révoque un appareil temporaire et laisse ses tâches « [
 
 ## Assistant
 
-Sans `DEEPSEEK_API_KEY`, le développement utilise un fournisseur à règles déterministe (les cinq demandes de référence) ; en production sans clé, l'assistant répond 503. Avec une clé dans `.env` :
+Sans `DEEPSEEK_API_KEY`, le développement utilise un fournisseur à règles déterministe (les cinq demandes de référence) ; en production sans clé, l'assistant répond 503. En local, garder `ASSISTANT_PROVIDER=rules` dans `.env` même avec une clé : la pile Docker et `smoke:local` restent gratuits. L'évaluation utilise toujours le vrai modèle et exige une liste de cas (chaque cas ≈ 15 000 à 30 000 tokens) :
 
 ```powershell
-.\scripts\npm-local.ps1 run eval:assistant                 # 24 cas contre le vrai modèle, schéma jetable
-.\scripts\npm-local.ps1 run eval:assistant -- reference-free-slots   # un seul cas
+.\scripts\npm-local.ps1 run eval:assistant                          # liste des cas, aucun appel
+.\scripts\npm-local.ps1 run eval:assistant -- reference-free-slots   # un seul cas, schéma jetable
+.\scripts\npm-local.ps1 run eval:assistant -- --all                  # les 24 cas
 ```
 
 Réglages : `ASSISTANT_PROVIDER` (`deepseek`, `rules`, `disabled`), `DEEPSEEK_MODEL` (`deepseek-flash`), `DEEPSEEK_THINKING` (`false`), `ASSISTANT_MONTHLY_TOKEN_BUDGET`.
+
+## Voix
+
+Sans `OPENAI_API_KEY`, le développement renvoie une transcription simulée (texte marqué « [voix simulée] », aucun audio ne sort de la machine) ; en production sans clé, les routes vocales répondent 503. L'audio vit dans `AUDIO_DIR` (tmpfs du conteneur), jamais dans une sauvegarde, et disparaît dès la fin de la transcription.
+
+Réglages : `TRANSCRIPTION_PROVIDER` (`openai`, `simulated`, `disabled`), `OPENAI_TRANSCRIPTION_MODEL` (`gpt-transcribe`), `TRANSCRIPTION_MONTHLY_MINUTES` (600), `AUDIO_DIR`.
 
 Appairer un appareil (console de confiance uniquement ; le secret s'affiche une fois et expire en 10 minutes) :
 
@@ -75,10 +83,21 @@ docker compose --profile app up -d --wait
 
 `restore` garde l'ancienne base sous `planner_before_restore_…`, réinitialise PowerSync, crée une nouvelle génération et révoque tous les appareils (sauf `--keep-devices`) : réappairer ensuite. Procédure complète : `04_Backend/05_Homelab_Deployment.md`. Les fichiers de `backups/` contiennent des données personnelles et des empreintes de mots de passe : ne pas les partager, copie chiffrée hors machine.
 
+## Partager le projet pour une revue
+
+Ne pas zipper le dossier : il contient `.env`, `.local/`, `backups/` et les dépendances. Utiliser :
+
+```powershell
+.\scripts\export-review.ps1          # ..\_exports\planner-review-….zip : pack, fichiers racine, backend suivi par Git
+```
+
+L'archive est refusée si un fichier ressemble à une clé ou à un dump, ou contient une valeur secrète du `.env` local (seul le nom de la variable est affiché).
+
 ## Tests
 
 - `test:unit` : module temporel, règles de sauvegarde et frontière HTTP, sans base.
-- `test:integration` : PostgreSQL dans un schéma jetable par suite (contraintes, migrations, rôles, restaurabilité, provisionnement, commandes et concurrence, route de sync, export, fixtures de conflits, assistant et jeu d'évaluation scripté). Nécessite `DATABASE_ADMIN_URL`.
+- `test:integration` : PostgreSQL dans un schéma jetable par suite (contraintes, migrations, rôles, restaurabilité, couverture de la sauvegarde, provisionnement, commandes et concurrence, route de sync, export, fixtures de conflits, assistant et jeu d'évaluation scripté, voix). Nécessite `DATABASE_ADMIN_URL`.
+- `tests/fixtures/audio` : deux vrais fichiers AAC de 3 s (mono, stéréo) générés par ffmpeg, sans voix.
 - `smoke:local` et `spike:powersync` demandent la pile Docker démarrée.
 - Aucun test Swift/iPhone n'est exécuté depuis Windows.
 

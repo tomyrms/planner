@@ -1,20 +1,30 @@
 // Live evaluation of the configured provider on fixtures/assistant/eval-v1.json (npm run eval:assistant).
 // Uses a disposable PostgreSQL schema, never the real data. Prints ids, verdicts and metrics, never prompts.
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import pg from 'pg';
 import { loadConfig } from '../src/config.js';
 import { migrate } from '../src/infrastructure/db/migrate.js';
 import { DeepSeekProvider } from '../src/modules/assistant/index.js';
 import { loadEvalSet, runCase, type CaseReport } from './assistant-eval-lib.js';
 
+// Always the real model here, even when the local stack runs the free rule-based stand-in (ASSISTANT_PROVIDER=rules).
+if (!process.env.DEEPSEEK_API_KEY && !existsSync('.env')) throw new Error('DEEPSEEK_API_KEY manquant.');
+process.env.ASSISTANT_PROVIDER = 'deepseek';
 const config = loadConfig();
-if (config.assistant.provider.kind !== 'deepseek') {
-  throw new Error('Set DEEPSEEK_API_KEY (and optionally ASSISTANT_PROVIDER=deepseek) to evaluate the real model.');
-}
+if (config.assistant.provider.kind !== 'deepseek') throw new Error('DEEPSEEK_API_KEY manquant.');
 if (!config.databaseAdminUrl) throw new Error('DATABASE_ADMIN_URL is required for the disposable schema.');
 const provider = new DeepSeekProvider(config.assistant.provider);
 const set = loadEvalSet();
-const only = process.argv.slice(2);
+const args = process.argv.slice(2);
+const only = args.filter((arg) => arg !== '--all');
+// Each case costs about 15 000 to 30 000 tokens: a full run must be asked for explicitly.
+if (only.length === 0 && !args.includes('--all')) {
+  process.stdout.write(`Précisez des cas (ou --all pour les ${set.cases.length}, ≈ ${set.cases.length * 20} k tokens) :\n${set.cases.map((item) => `  ${item.id}`).join('\n')}\n`);
+  process.exit(1);
+}
+const unknown = only.filter((id) => !set.cases.some((item) => item.id === id));
+if (unknown.length > 0) throw new Error(`Cas inconnus : ${unknown.join(', ')}`);
 const schema = `planner_eval_${randomUUID().replaceAll('-', '')}`;
 const admin = new pg.Pool({ connectionString: config.databaseAdminUrl, max: 1 });
 await admin.query(`CREATE SCHEMA "${schema}"`);
