@@ -175,7 +175,7 @@ nonisolated struct TaskRepository: Sendable {
     private static func projectName(_ id: String?, in tx: any Transaction) throws -> String? {
         guard let id else { return nil }
         return try tx.getOptional(sql: "SELECT name FROM projects WHERE id = ?", parameters: [id]) { cursor in
-            try cursor.getStringOptional(index: 0) ?? ""
+            cursor.getStringOptional(index: 0) ?? ""
         }
     }
 

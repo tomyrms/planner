@@ -21,8 +21,15 @@ final class SyncController {
         })
     }
 
-    /// Live engine state (connected, uploading, last sync…), observable by the views.
-    var status: ObservableSyncStatus {
+    // Engine state for the views, which never see PowerSync types (observation passes through).
+    var isConnected: Bool { status.connected }
+    var isConnecting: Bool { status.connecting }
+    var isTransferring: Bool { status.uploading || status.downloading }
+    var lastSyncedAt: Date? { status.lastSyncedAt }
+    /// `nil` while the first sync state is unknown.
+    var hasSynced: Bool? { status.hasSynced }
+
+    private var status: ObservableSyncStatus {
         db.currentStatus.observable
     }
 

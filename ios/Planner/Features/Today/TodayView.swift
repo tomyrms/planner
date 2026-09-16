@@ -98,7 +98,7 @@ struct SyncNotice: View {
                 Label("La synchronisation attend une action : Listes › Réglages.", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                     .foregroundStyle(.orange)
             }
-        } else if services.sync.status.hasSynced != true {
+        } else if services.sync.hasSynced != true {
             Section {
                 Label("Première synchronisation…", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(.secondary)

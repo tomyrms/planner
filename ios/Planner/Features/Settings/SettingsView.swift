@@ -57,7 +57,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            if let lastSync = services.sync.status.lastSyncedAt {
+            if let lastSync = services.sync.lastSyncedAt {
                 LabeledContent("Dernière synchronisation", value: lastSync.formatted(.relative(presentation: .named)))
             }
             LabeledContent("Modifications en attente", value: pendingText)
@@ -120,9 +120,9 @@ struct SettingsView: View {
 
     private var stateText: String {
         if services.sync.block != nil { return "Action requise" }
-        let status = services.sync.status
-        if status.connected { return status.uploading || status.downloading ? "En cours" : "Connecté" }
-        if status.connecting { return "Connexion…" }
+        let sync = services.sync
+        if sync.isConnected { return sync.isTransferring ? "En cours" : "Connecté" }
+        if sync.isConnecting { return "Connexion…" }
         return "Hors ligne"
     }
 
