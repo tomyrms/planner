@@ -38,8 +38,13 @@ export function occurrenceId(taskId: string, occurrenceKey: string): string {
 }
 
 export function nextAfterCompletionDate(rule: AfterCompletionRecurrence, referenceInstant: string, deviceTimeZone: string): string {
+  return nextAfterCompletionFromLocalDate(rule, localDateAt(referenceInstant, deviceTimeZone));
+}
+
+/** Sync commands carry the civil date of the action as seen on the device. */
+export function nextAfterCompletionFromLocalDate(rule: AfterCompletionRecurrence, completedLocalDate: string): string {
   const parsed = afterCompletionRecurrenceSchema.parse(rule);
-  const day = Temporal.PlainDate.from(localDateAt(referenceInstant, deviceTimeZone));
+  const day = Temporal.PlainDate.from(civilDateSchema.parse(completedLocalDate));
   const duration = parsed.unit === 'day' ? { days: parsed.interval } : parsed.unit === 'week' ? { weeks: parsed.interval } : { months: parsed.interval };
   return civilDateSchema.parse(day.add(duration, { overflow: 'constrain' }).toString());
 }
@@ -110,6 +115,15 @@ function isOccurrence(anchor: Temporal.PlainDate, rule: FixedRecurrence, date: T
   return countThrough(anchor, rule, date) > countThrough(anchor, rule, date.subtract({ days: 1 }));
 }
 
+/** True when the civil date is produced by the fixed series (anchor, count and until included). */
+export function isFixedOccurrence(input: { anchor: string; rule: FixedRecurrence; date: string }): boolean {
+  return isOccurrence(
+    Temporal.PlainDate.from(civilDateSchema.parse(input.anchor)),
+    fixedRecurrenceSchema.parse(input.rule),
+    Temporal.PlainDate.from(civilDateSchema.parse(input.date)),
+  );
+}
+
 export interface FixedWindowInput { taskId: string; anchor: string; rule: FixedRecurrence; from: string; through: string }
 export interface FixedOccurrence { id: string; occurrenceKey: string }
 
@@ -150,13 +164,18 @@ function keyAtRank(anchor: Temporal.PlainDate, rule: FixedRecurrence, through: T
   return anchor.add({ days: low }).toString();
 }
 
-/** One summary row for days strictly before beforeDate. No historical occurrence array. */
-export function countMissedFixed(input: { anchor: string; rule: FixedRecurrence; beforeDate: string; materialized?: readonly MaterializedOccurrence[] }): { count: number; latestOccurrenceKey: string | null } {
+/** One summary row for days strictly before beforeDate. No historical occurrence array.
+ * ignoredBefore (series-level "ignore previous") drops every origin date before it.
+ */
+export function countMissedFixed(input: { anchor: string; rule: FixedRecurrence; beforeDate: string; materialized?: readonly MaterializedOccurrence[]; ignoredBefore?: string | null }): { count: number; latestOccurrenceKey: string | null } {
   const anchor = Temporal.PlainDate.from(civilDateSchema.parse(input.anchor));
   const rule = fixedRecurrenceSchema.parse(input.rule);
   const cutoff = Temporal.PlainDate.from(civilDateSchema.parse(input.beforeDate));
   const through = cutoff.subtract({ days: 1 });
-  const total = countThrough(anchor, rule, through);
+  const ignoredBefore = input.ignoredBefore == null ? null : civilDateSchema.parse(input.ignoredBefore);
+  const upper = countThrough(anchor, rule, through);
+  const lower = ignoredBefore === null ? 0 : countThrough(anchor, rule, Temporal.PlainDate.from(ignoredBefore).subtract({ days: 1 }));
+  const total = Math.max(0, upper - lower);
   const excluded = new Set<string>();
   const extras: string[] = [];
   const seen = new Set<string>();
@@ -164,15 +183,16 @@ export function countMissedFixed(input: { anchor: string; rule: FixedRecurrence;
     civilDateSchema.parse(row.occurrenceKey);
     if (seen.has(row.occurrenceKey)) throw new RangeError('Duplicate materialized occurrence key');
     seen.add(row.occurrenceKey);
+    if (ignoredBefore !== null && row.occurrenceKey < ignoredBefore) continue;
     const effectiveDate = row.overrideDate == null ? row.occurrenceKey : civilDateSchema.parse(row.overrideDate);
     const inBase = row.occurrenceKey < input.beforeDate && isOccurrence(anchor, rule, Temporal.PlainDate.from(row.occurrenceKey));
     const missed = row.status === 'open' && effectiveDate < input.beforeDate;
     if (inBase && !missed) excluded.add(row.occurrenceKey);
     if (!inBase && missed) extras.push(row.occurrenceKey);
   }
-  let rank = total;
+  let rank = upper;
   let latest: string | null = null;
-  while (rank > 0) {
+  while (rank > lower) {
     const key = keyAtRank(anchor, rule, through, rank);
     if (!excluded.has(key)) { latest = key; break; }
     rank--;

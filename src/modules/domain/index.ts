@@ -1,1 +1,2 @@
-export * from './after-completion.js';
+export * from './derive.js';
+export * from './search.js';

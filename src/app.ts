@@ -1,7 +1,12 @@
 import Fastify, { LogController, type FastifySchema, type RouteOptions } from 'fastify';
 import type { Pool } from 'pg';
 import { registerAuthRoutes, type AuthConfig } from './modules/auth/index.js';
+import { registerExportRoutes } from './modules/export/index.js';
+import { registerSyncRoutes } from './modules/sync/index.js';
 import { registerErrorHandler } from './errors.js';
+
+export const DEFAULT_MINIMUM_CLIENT_VERSION = '0.1.0';
+const BEARER_ROUTES = new Set(['/api/v1/auth/sync-token', '/api/v1/auth/logout', '/api/v1/sync/mutations', '/api/v1/export']);
 
 type JsonObject = Record<string, unknown>;
 const liveSchema: FastifySchema = {
@@ -11,13 +16,21 @@ const readyBody = {
   type: 'object', required: ['status', 'scope', 'database', 'sync'], additionalProperties: false,
   properties: {
     status: { enum: ['ready', 'not_ready'], type: 'string' },
-    scope: { const: 'backend-foundation', type: 'string' },
+    scope: { const: 'backend-sync', type: 'string' },
     database: { enum: ['ready', 'unavailable'], type: 'string' },
-    sync: { const: 'not_installed', type: 'string' },
+    sync: { enum: ['provisioned', 'not_provisioned', 'unknown'], type: 'string' },
   },
 };
 
-export async function buildApp(options: { pool: Pool; auth: AuthConfig; logger?: boolean }) {
+export interface BuildAppOptions {
+  pool: Pool;
+  auth: AuthConfig;
+  logger?: boolean;
+  sync?: { minimumClientVersion?: string; clock?: () => Date };
+  exportIntervalMs?: number;
+}
+
+export async function buildApp(options: BuildAppOptions) {
   const app = Fastify({
     bodyLimit: 1_048_576,
     trustProxy: false,
@@ -39,7 +52,7 @@ export async function buildApp(options: { pool: Pool; auth: AuthConfig; logger?:
       paths[route.url]![method.toLowerCase()] = {
         responses,
         ...(schema?.body ? { requestBody: { required: true, content: { 'application/json': { schema: schema.body } } } } : {}),
-        ...(['/api/v1/auth/sync-token', '/api/v1/auth/logout'].includes(route.url) ? { security: [{ bearerAuth: [] }] } : {}),
+        ...(BEARER_ROUTES.has(route.url) ? { security: [{ bearerAuth: [] }] } : {}),
       };
     }
   });
@@ -49,15 +62,27 @@ export async function buildApp(options: { pool: Pool; auth: AuthConfig; logger?:
   });
   const auth = registerAuthRoutes(app, { pool: options.pool, config: options.auth });
   await auth.ready();
+  registerSyncRoutes(app, {
+    pool: options.pool, auth,
+    minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
+    ...(options.sync?.clock ? { clock: options.sync.clock } : {}),
+  });
+  registerExportRoutes(app, {
+    pool: options.pool, auth,
+    ...(options.exportIntervalMs === undefined ? {} : { intervalMs: options.exportIntervalMs }),
+    ...(options.sync?.clock ? { clock: options.sync.clock } : {}),
+  });
   app.get('/api/v1/health/live', { schema: liveSchema }, async () => ({ status: 'alive' }));
   app.get('/api/v1/health/ready', { schema: { response: { 200: readyBody, 503: readyBody } } }, async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     try {
-      const result = await options.pool.query('SELECT generation FROM server_meta LIMIT 1');
+      // The API serves uploads on its own; "sync" only reports whether PowerSync can replicate (publication present).
+      const result = await options.pool.query<{ generation: string; sync_provisioned: boolean }>(
+        "SELECT generation, EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'powersync') AS sync_provisioned FROM server_meta LIMIT 1");
       if (result.rowCount !== 1) throw new Error('Missing generation');
-      return { status: 'ready', scope: 'backend-foundation', database: 'ready', sync: 'not_installed' };
+      return { status: 'ready', scope: 'backend-sync', database: 'ready', sync: result.rows[0]!.sync_provisioned ? 'provisioned' : 'not_provisioned' };
     } catch {
-      return reply.code(503).send({ status: 'not_ready', scope: 'backend-foundation', database: 'unavailable', sync: 'not_installed' });
+      return reply.code(503).send({ status: 'not_ready', scope: 'backend-sync', database: 'unavailable', sync: 'unknown' });
     }
   });
   await app.ready();
@@ -65,7 +90,7 @@ export async function buildApp(options: { pool: Pool; auth: AuthConfig; logger?:
     app,
     openApi: {
       openapi: '3.1.0',
-      info: { title: 'Planner backend — étape 1', version: '0.1.0', description: 'Auth et santé du backend. La synchronisation PowerSync est hors de cette étape.' },
+      info: { title: 'Planner backend — étape 2', version: '0.2.0', description: 'Auth, santé, upload des commandes de synchronisation et export. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
       paths,
       components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
     },

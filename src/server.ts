@@ -4,7 +4,7 @@ import { createPool } from './infrastructure/db/pool.js';
 
 const config = loadConfig();
 const pool = createPool(config.databaseUrl);
-const { app } = await buildApp({ pool, auth: config.auth, logger: true });
+const { app } = await buildApp({ pool, auth: config.auth, logger: true, sync: { minimumClientVersion: config.minimumClientVersion } });
 pool.on('error', () => app.log.error({ code: 'DATABASE_CONNECTION_ERROR' }, 'Database connection failed'));
 let stopping = false;
 async function shutdown() {

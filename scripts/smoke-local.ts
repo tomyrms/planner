@@ -1,5 +1,7 @@
 // Local end-to-end check against a running API (npm run smoke:local).
 // Uses the trusted console capability, then the public HTTP routes. Prints no secret or token.
+// Leaves one trashed "[smoke]" task in the local database, as a real device would.
+import { randomUUID } from 'node:crypto';
 import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/infrastructure/db/pool.js';
 import { AuthService } from '../src/modules/auth/index.js';
@@ -9,12 +11,13 @@ const config = loadConfig();
 const pool = createPool(config.databaseUrl);
 const steps: string[] = [];
 
-async function call(method: string, path: string, init: { body?: unknown; token?: string } = {}): Promise<{ status: number; json: any }> {
+async function call(method: string, path: string, init: { body?: unknown; token?: string; clientVersion?: string } = {}): Promise<{ status: number; json: any }> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
       ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
       ...(init.token ? { authorization: `Bearer ${init.token}` } : {}),
+      ...(init.clientVersion ? { 'x-client-version': init.clientVersion } : {}),
     },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
@@ -32,7 +35,7 @@ try {
   expectStatus('health/live', live.status, 200);
   const ready = await call('GET', '/api/v1/health/ready');
   expectStatus('health/ready', ready.status, 200);
-  if (ready.json.sync !== 'not_installed') throw new Error('Portée de readiness inattendue');
+  if (ready.json.sync !== 'provisioned') throw new Error('PowerSync non provisionné : lancer npm run db:provision-sync');
 
   const service = new AuthService(pool, config.auth);
   const { pairingSecret } = await service.createPairingSecret({ name: 'Smoke test local' });
@@ -49,9 +52,30 @@ try {
   expectStatus('jwks', jwks.status, 200);
   if (jwks.json.keys.some((key: Record<string, unknown>) => 'd' in key)) throw new Error('Clé privée exposée dans le JWKS');
 
+  const token = rotated.json.accessToken as string;
+  const clientVersion = `${config.minimumClientVersion} (build 1)`;
+  const taskId = randomUUID();
+  const createId = randomUUID();
+  const recordedAt = new Date().toISOString();
+  const envelope = { envelopeVersion: 1, serverGeneration: rotated.json.serverGeneration, commands: [
+    { clientCommandId: createId, type: 'task.create', payloadVersion: 1, aggregate: { type: 'task', id: taskId }, clientRecordedAt: recordedAt, payload: { title: '[smoke] tâche de test' } },
+    { clientCommandId: randomUUID(), type: 'task.delete', payloadVersion: 1, aggregate: { type: 'task', id: taskId }, clientRecordedAt: recordedAt,
+      precondition: { kind: 'afterCommand', clientCommandId: createId } },
+  ] };
+  const mutations = await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: envelope });
+  expectStatus('sync/mutations', mutations.status, 200);
+  const outcomes = mutations.json.results.map((result: { outcome: string; revision?: number }) => `${result.outcome}:${result.revision}`).join(',');
+  if (outcomes !== 'applied:1,applied:2') throw new Error(`Résultats de sync inattendus : ${outcomes}`);
+  const replay = await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: envelope });
+  expectStatus('sync/mutations rejoué', replay.status, 200);
+  if (!replay.json.results.every((result: { outcome: string }) => result.outcome === 'duplicate')) throw new Error('Le rejeu a produit un nouvel effet');
+  expectStatus('sync/mutations sans version', (await call('POST', '/api/v1/sync/mutations', { token, body: envelope })).status, 426);
+  expectStatus('sync/mutations autre génération', (await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: { ...envelope, serverGeneration: randomUUID() } })).status, 409);
+
   expectStatus('auth/logout', (await call('POST', '/api/v1/auth/logout', { token: rotated.json.accessToken })).status, 200);
   expectStatus('refresh après logout', (await call('POST', '/api/v1/auth/refresh', { body: { refreshToken: rotated.json.refreshToken } })).status, 401);
   expectStatus('sync-token après logout', (await call('GET', '/api/v1/auth/sync-token', { token: rotated.json.accessToken })).status, 401);
+  expectStatus('sync/mutations après logout', (await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: envelope })).status, 401);
   expectStatus('route CRUD absente', (await call('POST', '/api/v1/tasks', { body: {} })).status, 404);
 
   process.stdout.write(`Smoke local réussi (${baseUrl}) :\n${steps.map((step) => `  ✓ ${step}`).join('\n')}\n`);

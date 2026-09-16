@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "description": "Sync conflict scenarios: ordered commands and the terminal outcome the server returns (02_API_Contract.md §3, 03_Data_Model.md §5.3). Symbolic references: task:x, project:x and reminder:x become UUIDs; cmd:x is the clientCommandId of the step with id x. Unless stated, the actor is the paired user, clientRecordedAt is 2026-09-16T10:00:00+02:00 and the server clock is 2026-09-16T08:30:00Z. 'expect' is a partial match of the result; 'state' is a partial match of task rows after the step.",
+  "cases": [
+    {
+      "id": "delete-dominates-edit",
+      "description": "An edit of a trashed task is rejected; only task.restore brings it back.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Appeler le garage" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "task.delete", "aggregate": "task:a" }, "expect": { "outcome": "applied", "revision": 2 } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "payload": { "set": { "title": "Trop tard" } } }, "expect": { "outcome": "rejected", "code": "TASK_DELETED", "currentRevision": 2 } },
+        { "command": { "type": "task.restore", "aggregate": "task:a" }, "expect": { "outcome": "applied", "revision": 3 } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "payload": { "set": { "title": "Rappeler le garage" } } }, "expect": { "outcome": "applied", "revision": 4 }, "state": { "task:a": { "title": "Rappeler le garage" } } }
+      ]
+    },
+    {
+      "id": "last-accepted-patch-wins",
+      "description": "Independent fields need no precondition; the patch committed last wins.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Courses" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "payload": { "set": { "title": "Courses du samedi" } } }, "expect": { "outcome": "applied", "revision": 2 } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "payload": { "set": { "title": "Courses du dimanche", "priority": "high" } } }, "expect": { "outcome": "applied", "revision": 3 }, "state": { "task:a": { "title": "Courses du dimanche", "priority": "high" } } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "payload": { "set": { "priority": "high" } } }, "expect": { "outcome": "applied", "revision": 3, "noop": true } }
+      ]
+    },
+    {
+      "id": "offline-chain",
+      "description": "Several offline edits of one task chain with afterCommand without false conflicts; a stale chain is refused.",
+      "steps": [
+        { "id": "create", "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Devoir" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "id": "first", "command": { "type": "task.patch", "aggregate": "task:a", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:create" }, "payload": { "set": { "notes": "Chapitre 3" } } }, "expect": { "outcome": "applied", "revision": 2 } },
+        { "id": "second", "command": { "type": "task.patch", "aggregate": "task:a", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:first" }, "payload": { "set": { "schedule": { "date": "2026-09-18", "time": "17:00", "timeZone": "Europe/Zurich" } } } }, "expect": { "outcome": "applied", "revision": 3 } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:first" }, "payload": { "set": { "notes": "Obsolète" } } }, "expect": { "outcome": "rejected", "code": "REVISION_MISMATCH", "currentRevision": 3 } }
+      ]
+    },
+    {
+      "id": "dependency-rejected",
+      "description": "A command chained on a rejected command is rejected too, and the batch continues.",
+      "steps": [
+        { "id": "failed", "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Sans base", "reminders": [{ "id": "reminder:r", "rule": { "kind": "before_start", "offsetMinutes": 10 } }] } }, "expect": { "outcome": "rejected", "code": "REMINDER_BASE_MISSING" } },
+        { "command": { "type": "task.patch", "aggregate": "task:a", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:failed" }, "payload": { "set": { "title": "Suite" } } }, "expect": { "outcome": "rejected", "code": "ENTITY_NOT_FOUND" } },
+        { "command": { "type": "task.create", "aggregate": "task:b", "payload": { "title": "Indépendante" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "task.patch", "aggregate": "task:b", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:failed" }, "payload": { "set": { "title": "Suite" } } }, "expect": { "outcome": "rejected", "code": "DEPENDENCY_REJECTED", "currentRevision": 1 } }
+      ]
+    },
+    {
+      "id": "idempotent-replay",
+      "description": "A retried command returns its original result; an identifier reused for other content is refused.",
+      "steps": [
+        { "id": "create", "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Unique" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "replay": "create", "expect": { "outcome": "duplicate", "original": { "outcome": "applied", "revision": 1, "aggregateId": "task:a" } } },
+        { "replay": "create", "payload": { "title": "Autre contenu" }, "expect": { "outcome": "rejected", "code": "IDEMPOTENCY_KEY_REUSED" } },
+        { "replay": "create", "as": "other", "expect": { "outcome": "rejected", "code": "IDEMPOTENCY_KEY_REUSED" } }
+      ]
+    },
+    {
+      "id": "update-never-creates",
+      "description": "Updates of unknown or foreign identifiers are rejected, never turned into inserts.",
+      "steps": [
+        { "command": { "type": "task.patch", "aggregate": "task:unknown", "payload": { "set": { "title": "Fantôme" } } }, "expect": { "outcome": "rejected", "code": "ENTITY_NOT_FOUND" } },
+        { "as": "other", "command": { "type": "task.create", "aggregate": "task:foreign", "payload": { "title": "À quelqu'un d'autre" } }, "expect": { "outcome": "applied" } },
+        { "command": { "type": "task.patch", "aggregate": "task:foreign", "payload": { "set": { "title": "Volée" } } }, "expect": { "outcome": "rejected", "code": "ENTITY_NOT_FOUND" } },
+        { "command": { "type": "task.create", "aggregate": "task:foreign", "payload": { "title": "Collision" } }, "expect": { "outcome": "rejected", "code": "ENTITY_ALREADY_EXISTS" } }
+      ]
+    },
+    {
+      "id": "series-requires-precondition",
+      "description": "Whole-series edits prove what the client last saw.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:s", "payload": { "title": "Sport", "schedule": { "date": "2026-09-17", "time": "07:00", "timeZone": "Europe/Zurich" }, "recurrence": { "v": 1, "mode": "fixed", "freq": "weekly", "interval": 1, "byWeekday": ["TH"] } } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "series.update", "aggregate": "task:s", "payload": { "set": { "title": "Course" } } }, "expect": { "outcome": "rejected", "code": "VALIDATION_FAILED" } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:s", "payload": { "occurrenceKey": "2026-09-17", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "applied", "revision": 2, "status": "completed" } },
+        { "command": { "type": "series.update", "aggregate": "task:s", "precondition": { "kind": "revision", "revision": 1 }, "payload": { "set": { "title": "Course" } } }, "expect": { "outcome": "rejected", "code": "REVISION_MISMATCH", "currentRevision": 2 } },
+        { "command": { "type": "series.update", "aggregate": "task:s", "precondition": { "kind": "revision", "revision": 2 }, "payload": { "set": { "title": "Course" } } }, "expect": { "outcome": "applied", "revision": 3 } },
+        { "command": { "type": "task.patch", "aggregate": "task:s", "payload": { "set": { "schedule": { "date": "2026-09-18", "time": null, "timeZone": null } } } }, "expect": { "outcome": "rejected", "code": "SERIES_COMMAND_REQUIRED" } }
+      ]
+    },
+    {
+      "id": "double-completion-after-completion",
+      "description": "Two devices close the same cycle: one successor, the second close changes nothing.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:f", "payload": { "title": "Changer le filtre", "schedule": { "date": "2026-09-16", "time": null, "timeZone": null }, "recurrence": { "v": 1, "mode": "after_completion", "unit": "day", "interval": 90 } } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-16~0", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "applied", "revision": 2, "successorOccurrenceKey": "2026-12-15~1" } },
+        { "command": { "type": "occurrence.skip", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-16~0", "actionLocalDate": "2026-09-17" } }, "expect": { "outcome": "applied", "revision": 2, "noop": true, "status": "completed", "successorOccurrenceKey": "2026-12-15~1" } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:f", "payload": { "occurrenceKey": "2027-03-15~2", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "rejected", "code": "OCCURRENCE_NOT_CURRENT" } }
+      ]
+    },
+    {
+      "id": "reopen-after-successor-changed",
+      "description": "A cycle cannot be reopened once its successor was closed.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:f", "payload": { "title": "Arroser", "schedule": { "date": "2026-09-16", "time": null, "timeZone": null }, "recurrence": { "v": 1, "mode": "after_completion", "unit": "day", "interval": 1 } } }, "expect": { "outcome": "applied" } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-16~0", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "applied", "successorOccurrenceKey": "2026-09-17~1" } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-17~1", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "applied", "successorOccurrenceKey": "2026-09-17~2" } },
+        { "command": { "type": "occurrence.reopen", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-16~0" } }, "expect": { "outcome": "rejected", "code": "SUCCESSOR_ALREADY_CHANGED" } },
+        { "command": { "type": "occurrence.reopen", "aggregate": "task:f", "payload": { "occurrenceKey": "2026-09-17~1" } }, "expect": { "outcome": "applied", "status": "open" } }
+      ]
+    },
+    {
+      "id": "series-ended",
+      "description": "Occurrences of an ended series are refused until the series is reopened.",
+      "steps": [
+        { "id": "create", "command": { "type": "task.create", "aggregate": "task:s", "payload": { "title": "Vitamines", "schedule": { "date": "2026-09-01", "time": null, "timeZone": null }, "recurrence": { "v": 1, "mode": "fixed", "freq": "daily", "interval": 1 } } }, "expect": { "outcome": "applied" } },
+        { "command": { "type": "series.end", "aggregate": "task:s", "precondition": { "kind": "afterCommand", "clientCommandId": "cmd:create" } }, "expect": { "outcome": "applied", "revision": 2 } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:s", "payload": { "occurrenceKey": "2026-09-16", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "rejected", "code": "SERIES_ENDED" } },
+        { "command": { "type": "task.reopen", "aggregate": "task:s" }, "expect": { "outcome": "applied", "revision": 3 } },
+        { "command": { "type": "occurrence.complete", "aggregate": "task:s", "payload": { "occurrenceKey": "2026-09-16", "actionLocalDate": "2026-09-16" } }, "expect": { "outcome": "applied", "revision": 4 } }
+      ]
+    },
+    {
+      "id": "list-trash-and-restore",
+      "description": "Deleting a list trashes its tasks with the same command; restoring the list brings exactly those back.",
+      "steps": [
+        { "command": { "type": "project.create", "aggregate": "project:p", "payload": { "name": "Cours C#" } }, "expect": { "outcome": "applied", "revision": 1 } },
+        { "command": { "type": "task.create", "aggregate": "task:t", "payload": { "title": "Exercice", "projectId": "project:p" } }, "expect": { "outcome": "applied" } },
+        { "command": { "type": "project.delete", "aggregate": "project:p", "payload": { "taskPolicy": "trash_tasks_with_project" } }, "expect": { "outcome": "rejected", "code": "VALIDATION_FAILED" } },
+        { "command": { "type": "project.delete", "aggregate": "project:p", "precondition": { "kind": "revision", "revision": 1 }, "payload": { "taskPolicy": "trash_tasks_with_project" } }, "expect": { "outcome": "applied", "revision": 2, "affectedTaskIds": ["task:t"] } },
+        { "command": { "type": "task.restore", "aggregate": "task:t" }, "expect": { "outcome": "rejected", "code": "PROJECT_DELETED" } },
+        { "command": { "type": "task.create", "aggregate": "task:u", "payload": { "title": "Nouvelle", "projectId": "project:p" } }, "expect": { "outcome": "rejected", "code": "PROJECT_DELETED" } },
+        { "command": { "type": "project.restore", "aggregate": "project:p" }, "expect": { "outcome": "applied", "revision": 3, "affectedTaskIds": ["task:t"] }, "state": { "task:t": { "deleted_at": null } } }
+      ]
+    },
+    {
+      "id": "unknown-payload-version",
+      "description": "A command from a newer client is rejected explicitly instead of being guessed.",
+      "steps": [
+        { "command": { "type": "task.create", "aggregate": "task:a", "payloadVersion": 2, "payload": { "title": "Futur" } }, "expect": { "outcome": "rejected", "code": "PAYLOAD_VERSION_UNSUPPORTED" } },
+        { "command": { "type": "task.archive", "aggregate": "task:a" }, "expect": { "outcome": "rejected", "code": "PAYLOAD_VERSION_UNSUPPORTED" } },
+        { "command": { "type": "task.create", "aggregate": "task:a", "payload": { "title": "Présent" } }, "expect": { "outcome": "applied", "revision": 1 } }
+      ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@ const environmentSchema = z.object({
   AUTH_PRIVATE_KEY_PATH: z.string().min(1),
   AUTH_PUBLIC_KEY_PATH: z.string().min(1),
   AUTH_REFRESH_DERIVATION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  MIN_CLIENT_VERSION: z.string().regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}$/).default('0.1.0'),
 });
 
 export interface AppConfig {
@@ -25,6 +26,7 @@ export interface AppConfig {
   databaseUrl: string;
   databaseAdminUrl?: string;
   auth: AuthConfig;
+  minimumClientVersion: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -44,6 +46,7 @@ export function loadConfig(): AppConfig {
     port: env.PORT,
     databaseUrl: env.DATABASE_URL,
     ...(env.DATABASE_ADMIN_URL ? { databaseAdminUrl: env.DATABASE_ADMIN_URL } : {}),
+    minimumClientVersion: env.MIN_CLIENT_VERSION,
     auth: {
       issuer: env.AUTH_ISSUER,
       apiAudience: env.AUTH_API_AUDIENCE,

@@ -7,6 +7,9 @@ services:
       POSTGRES_USER: planner_owner
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run setup:local}
       PLANNER_API_PASSWORD: ${PLANNER_API_PASSWORD:?Run npm run setup:local}
+    # Logical decoding for PowerSync; a stalled slot may keep at most 2 GB of WAL before it is invalidated
+    # (PowerSync then replicates again from scratch instead of filling the disk).
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_slot_wal_keep_size=2GB"]
     ports:
       - "127.0.0.1:55437:5432"
     volumes:
@@ -35,6 +38,7 @@ services:
       AUTH_PRIVATE_KEY_PATH: /run/planner-secrets/auth-private.pem
       AUTH_PUBLIC_KEY_PATH: /run/planner-secrets/auth-public.pem
       AUTH_REFRESH_DERIVATION_KEY: ${AUTH_REFRESH_DERIVATION_KEY}
+      MIN_CLIENT_VERSION: ${MIN_CLIENT_VERSION:-0.1.0}
     ports:
       - "127.0.0.1:4317:4317"
     volumes:
@@ -49,5 +53,35 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+  powersync:
+    image: journeyapps/powersync-service:1.26.1@sha256:413a0c813e96935ebe7203b5759f8a594a7b7cd8aa42134713e63af637e0f079
+    profiles: [app]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    command: ["start", "-r", "unified"]
+    environment:
+      POWERSYNC_CONFIG_PATH: /config/service.yaml
+      NODE_OPTIONS: --max-old-space-size=512
+      PS_PORT: 8080
+      PS_DATA_SOURCE_URI: postgresql://planner_powersync:${PLANNER_POWERSYNC_PASSWORD:?Run npm run setup:local}@postgres:5432/planner
+      PS_STORAGE_URI: postgresql://planner_powersync_storage:${PLANNER_POWERSYNC_STORAGE_PASSWORD:?Run npm run setup:local}@postgres:5432/planner_powersync
+      PS_JWKS_URL: http://api:4317/.well-known/jwks.json
+    ports:
+      - "127.0.0.1:4318:8080"
+    volumes:
+      - ./powersync:/config:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/probes/liveness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
 volumes:
   planner-postgres:

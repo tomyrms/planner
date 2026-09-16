@@ -37,6 +37,7 @@ export const tasks = pgTable('tasks', {
   deadlineDate: date('deadline_date'), deadlineTime: time('deadline_time'), deadlineTimeZone: text('deadline_time_zone'),
   deadlineAt: timestamp('deadline_at', { withTimezone: true, mode: 'string' }),
   recurrence: jsonb('recurrence').$type<RecurrenceRule>(),
+  missedIgnoredBefore: date('missed_ignored_before'),
   searchText: text('search_text').notNull().default(''),
   deletedAt: timestamp('deleted_at', { withTimezone: true, mode: 'string' }), deletedByCommandId: uuid('deleted_by_command_id'),
   revision: bigint('revision', { mode: 'bigint' }).notNull().default(1n),
@@ -68,6 +69,12 @@ export const commandReceipts = pgTable('command_receipts', {
   payloadHash: text('payload_hash').notNull(), outcome: text('outcome', { enum: ['applied','rejected'] }).notNull(),
   result: jsonb('result').$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+});
+
+export const tombstones = pgTable('tombstones', {
+  entityType: text('entity_type', { enum: ['task', 'project'] }).notNull(), entityId: uuid('entity_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  purgedAt: timestamp('purged_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
 });
 
 export const serverMeta = pgTable('server_meta', {

@@ -1,28 +1,44 @@
 import { parseArgs } from 'node:util';
 import { loadConfig } from '../config.js';
 import { createPool } from '../infrastructure/db/pool.js';
+import { rotateGeneration } from '../infrastructure/db/recovery.js';
 import { AuthService } from '../modules/auth/index.js';
 
 const usage = `Console locale de confiance uniquement :
   npm run admin -- pair --name "iPhone" [--user UUID]
   npm run admin -- devices
   npm run admin -- devices revoke UUID
+  npm run admin -- restore-generation [--keep-devices]
 
 Le secret d'appairage apparaît une seule fois, expire en 10 minutes et doit être
-saisi dans l'iPhone. Ne partagez pas la sortie de cette commande.`;
+saisi dans l'iPhone. Ne partagez pas la sortie de cette commande.
+restore-generation (après une restauration) : nouvelle génération serveur, et
+révocation de tous les appareils sauf --keep-devices. npm run backup -- restore le fait déjà.`;
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { name: { type: 'string' }, user: { type: 'string' }, help: { type: 'boolean' } },
+    options: { name: { type: 'string' }, user: { type: 'string' }, 'keep-devices': { type: 'boolean' }, help: { type: 'boolean' } },
   });
   if (values.help || positionals.length === 0) { process.stdout.write(`${usage}\n`); return; }
   const [command, subcommand, deviceId] = positionals;
   const valid = (command === 'pair' && positionals.length === 1 && values.name)
     || (command === 'devices' && positionals.length === 1)
-    || (command === 'devices' && subcommand === 'revoke' && positionals.length === 3 && deviceId);
+    || (command === 'devices' && subcommand === 'revoke' && positionals.length === 3 && deviceId)
+    || (command === 'restore-generation' && positionals.length === 1);
   if (!valid) throw new Error(usage);
   const config = loadConfig();
+  if (command === 'restore-generation') {
+    if (!config.databaseAdminUrl) throw new Error('DATABASE_ADMIN_URL est requis.');
+    const admin = createPool(config.databaseAdminUrl);
+    try {
+      const result = await rotateGeneration(admin, { revokeDevices: !values['keep-devices'] });
+      process.stdout.write(`Nouvelle génération serveur : ${result.generation}
+Appareils révoqués : ${result.revokedDevices}
+`);
+    } finally { await admin.end(); }
+    return;
+  }
   const pool = createPool(config.databaseUrl);
   try {
     const service = new AuthService(pool, config.auth);

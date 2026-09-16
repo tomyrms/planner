@@ -1,0 +1,45 @@
+# PowerSync Open Edition — self-hosted (ADR-004, ADR-027). Secrets come from PS_* variables only.
+# Validated with journeyapps/powersync-service 1.26.1.
+
+replication:
+  connections:
+    - type: postgresql
+      # planner_powersync: LOGIN REPLICATION, SELECT on the 5 synced tables only (npm run db:provision-sync).
+      uri: !env PS_DATA_SOURCE_URI
+      # Private Docker network, never exposed. Use verify-full if the database moves to another host.
+      sslmode: disable
+
+storage:
+  # Bucket storage in its own database on the same PostgreSQL 18 server (supported from PostgreSQL 14).
+  type: postgresql
+  uri: !env PS_STORAGE_URI
+  sslmode: disable
+  max_pool_size: 4
+
+port: !env PS_PORT::number
+
+sync_config:
+  path: sync-config.yaml
+
+client_auth:
+  # Public keys of the planner API; sync tokens are RS256, audience planner-sync, 15 minutes (ADR-026).
+  jwks_uri: !env PS_JWKS_URL
+  # The API is reached on the private Compose network.
+  block_local_jwks: false
+  audience: ['planner-sync']
+
+# No admin API: without tokens every admin route is refused.
+api:
+  tokens: []
+
+telemetry:
+  disable_telemetry_sharing: true
+
+healthcheck:
+  probes:
+    use_http: true
+
+system:
+  logging:
+    level: info
+    format: json

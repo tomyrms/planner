@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  closeAfterCompletion, countMissedFixed, fixedOccurrences, isOverdue, nextAfterCompletion,
+  closeAfterCompletion, countMissedFixed, fixedOccurrences, isFixedOccurrence, isOverdue, nextAfterCompletion, nextAfterCompletionFromLocalDate,
   occurrenceId, projectTimeValue, relativeDate, reopenAfterCompletion, resolveReminderTrigger,
   resolveTimeValue, type AfterCompletionState, type FixedWindowInput, type TimeValue,
 } from '../../src/modules/time/index.js';
@@ -28,6 +28,14 @@ function run(fixture: Fixture): unknown {
     case 'fixedKeys': return fixedOccurrences({ ...(fixture.input as Omit<FixedWindowInput, 'taskId'>), taskId }).map((row) => row.occurrenceKey);
     case 'missed': return countMissedFixed(fixture.input as Parameters<typeof countMissedFixed>[0]);
     case 'nextAfter': return nextAfterCompletion(fixture.input as Parameters<typeof nextAfterCompletion>[0]);
+    case 'nextAfterFromDate': {
+      const input = fixture.input as { rule: Parameters<typeof nextAfterCompletionFromLocalDate>[0]; completedLocalDate: string };
+      return nextAfterCompletionFromLocalDate(input.rule, input.completedLocalDate);
+    }
+    case 'fixedMember': {
+      const input = fixture.input as { anchor: string; rule: FixedWindowInput['rule']; dates: string[] };
+      return input.dates.map((date) => isFixedOccurrence({ anchor: input.anchor, rule: input.rule, date }));
+    }
     case 'occurrenceId': {
       const input = fixture.input as { taskId: string; occurrenceKey: string };
       return occurrenceId(input.taskId, input.occurrenceKey);

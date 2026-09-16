@@ -23,11 +23,13 @@ describe('API boundary', () => {
     const result = await app.inject('/api/v1/health/ready');
     expect(result.statusCode).toBe(503);
     expect(result.body).not.toContain('private');
-    expect(result.json()).toMatchObject({ scope: 'backend-foundation', sync: 'not_installed', database: 'unavailable' });
+    expect(result.json()).toMatchObject({ scope: 'backend-sync', sync: 'unknown', database: 'unavailable' });
   });
-  it('reports the limited readiness scope honestly after the schema exists', async () => {
-    const { app } = await setup(vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ generation: 'g' }] }));
-    expect((await app.inject('/api/v1/health/ready')).json()).toMatchObject({ status: 'ready', sync: 'not_installed' });
+  it('reports whether PowerSync replication is provisioned', async () => {
+    const provisioned = await setup(vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ generation: 'g', sync_provisioned: true }] }));
+    expect((await provisioned.app.inject('/api/v1/health/ready')).json()).toEqual({ status: 'ready', scope: 'backend-sync', database: 'ready', sync: 'provisioned' });
+    const missing = await setup(vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ generation: 'g', sync_provisioned: false }] }));
+    expect((await missing.app.inject('/api/v1/health/ready')).json()).toMatchObject({ status: 'ready', sync: 'not_provisioned' });
   });
   it('rejects added ownership fields instead of silently stripping them', async () => {
     const { app, query } = await setup();
@@ -41,7 +43,7 @@ describe('API boundary', () => {
   });
   it('does not expose a public pairing initiation route or CRUD API', async () => {
     const { app } = await setup();
-    for (const url of ['/api/v1/auth/pair', '/api/v1/tasks', '/api/v1/projects']) {
+    for (const url of ['/api/v1/auth/pair', '/api/v1/tasks', '/api/v1/projects', '/api/v1/sync/commands']) {
       expect((await app.inject({ method: 'POST', url })).statusCode).toBe(404);
     }
   });
@@ -53,6 +55,7 @@ describe('API boundary', () => {
       }
     }
     expect(openApi.paths['/api/v1/auth/sync-token']?.get).toMatchObject({ security: [{ bearerAuth: [] }] });
+    expect(openApi.paths['/api/v1/sync/mutations']?.post).toMatchObject({ security: [{ bearerAuth: [] }] });
     expect(JSON.stringify(openApi)).not.toContain('PRIVATE KEY');
   });
 });
