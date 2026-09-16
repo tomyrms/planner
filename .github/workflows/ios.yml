@@ -42,7 +42,7 @@ jobs:
             -project Planner.xcodeproj -scheme Planner -configuration Debug \
             -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData \
             -skipPackagePluginValidation -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
+            CODE_SIGNING_ALLOWED=NO PLANNER_STRICT=YES \
             > build/xcodebuild.log 2>&1 || status=$?
           # Pinned versions of the Swift packages, to commit when they change.
           cat Planner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved 2>/dev/null || true

@@ -17,6 +17,10 @@ SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
 SWIFT_APPROACHABLE_CONCURRENCY = YES
 SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
 
+// The CI passes PLANNER_STRICT=YES: warnings fail the app target only (packages keep their own flags).
+PLANNER_STRICT = NO
+SWIFT_TREAT_WARNINGS_AS_ERRORS = $(PLANNER_STRICT)
+
 // Signing: the team is set in Local.xcconfig (not versioned), never in the project file.
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM =
