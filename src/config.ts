@@ -16,6 +16,10 @@ const environmentSchema = z.object({
   AUTH_PRIVATE_KEY_PATH: z.string().min(1),
   AUTH_PUBLIC_KEY_PATH: z.string().min(1),
   AUTH_REFRESH_DERIVATION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  // Public URLs the iPhone uses; the API one defaults to AUTH_ISSUER, the sync one to POWERSYNC_URL.
+  PUBLIC_API_URL: z.url().optional(),
+  PUBLIC_SYNC_URL: z.url().optional(),
+  POWERSYNC_URL: z.url().optional(),
   MIN_CLIENT_VERSION: z.string().regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}$/).default('0.1.0'),
   ASSISTANT_PROVIDER: z.enum(['deepseek', 'rules', 'disabled']).optional(),
   DEEPSEEK_API_KEY: z.string().min(1).optional(),
@@ -49,6 +53,7 @@ export interface AppConfig {
   databaseAdminUrl?: string;
   auth: AuthConfig;
   minimumClientVersion: string;
+  publicApiUrl: string;
   assistant: { provider: AssistantProviderConfig; monthlyTokenBudget: number };
   voice: { provider: TranscriptionProviderConfig; monthlyMinutes: number; audioDir?: string };
 }
@@ -64,6 +69,11 @@ export function loadConfig(): AppConfig {
   const env = parsed.data;
   if (env.NODE_ENV === 'production' && new URL(env.AUTH_ISSUER).protocol !== 'https:') {
     throw new Error('Production AUTH_ISSUER requires HTTPS.');
+  }
+  const publicApiUrl = env.PUBLIC_API_URL ?? env.AUTH_ISSUER;
+  const publicSyncUrl = env.PUBLIC_SYNC_URL ?? env.POWERSYNC_URL;
+  if (env.NODE_ENV === 'production' && [publicApiUrl, publicSyncUrl].some((url) => !url || new URL(url).protocol !== 'https:')) {
+    throw new Error('Production PUBLIC_API_URL and PUBLIC_SYNC_URL require HTTPS.');
   }
   // Default: DeepSeek when a key exists; the rule-based stand-in only outside production (ADR-005).
   const providerKind = env.ASSISTANT_PROVIDER ?? (env.DEEPSEEK_API_KEY ? 'deepseek' : env.NODE_ENV === 'production' ? 'disabled' : 'rules');
@@ -96,6 +106,8 @@ export function loadConfig(): AppConfig {
       privateKeyPem: readFileSync(env.AUTH_PRIVATE_KEY_PATH, 'utf8'),
       publicKeyPem: readFileSync(env.AUTH_PUBLIC_KEY_PATH, 'utf8'),
       refreshDerivationKey: env.AUTH_REFRESH_DERIVATION_KEY,
+      ...(publicSyncUrl ? { syncEndpoint: publicSyncUrl.replace(/\/+$/, '') } : {}),
     },
+    publicApiUrl: publicApiUrl.replace(/\/+$/, ''),
   };
 }

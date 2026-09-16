@@ -46,7 +46,9 @@ Appareils révoqués : ${result.revokedDevices}
     if (command === 'pair') {
       const result = await service.createPairingSecret({ name: values.name!, ...(values.user ? { userId: values.user } : {}) });
       // The only intentional secret output is this trusted interactive console.
-      process.stdout.write(`Secret d'appairage : ${result.pairingSecret}\nExpire à : ${result.expiresAt}\n`);
+      // One link carries the server address and the secret, to paste into the iPhone (a QR comes later).
+      const link = `planner://pair?api=${encodeURIComponent(config.publicApiUrl)}&secret=${encodeURIComponent(result.pairingSecret)}`;
+      process.stdout.write(`Secret d'appairage : ${result.pairingSecret}\nLien à coller dans l'iPhone : ${link}\nExpire à : ${result.expiresAt}\n`);
     } else if (subcommand === 'revoke') {
       if (!(await service.revokeDevice(deviceId!))) throw new Error('Appareil inconnu.');
       process.stdout.write('Appareil révoqué. API : immédiat ; sync : au plus 15 minutes.\n');

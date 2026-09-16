@@ -24,6 +24,7 @@ describe('PostgreSQL authentication lifecycle', () => {
       issuer: 'http://planner.test', apiAudience: 'planner-api', syncAudience: 'planner-sync', keyId: 'test-key',
       privateKeyPem: keys.privateKey, publicKeyPem: keys.publicKey,
       refreshDerivationKey: randomBytes(32).toString('hex'), now: () => now,
+      syncEndpoint: 'https://sync.planner.test',
     };
     app = Fastify({ logger: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
     registerErrorHandler(app);
@@ -148,7 +149,9 @@ describe('PostgreSQL authentication lifecycle', () => {
     const original = await pair();
     const result = await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(original) });
     expect(result.statusCode).toBe(200);
-    const sync = result.json<{ token: string; expiresAt: string }>();
+    const sync = result.json<{ token: string; expiresAt: string; endpoint: string }>();
+    // The iPhone learns the sync address from the server, never from its own build.
+    expect(sync.endpoint).toBe('https://sync.planner.test');
     const verified = await jwtVerify(sync.token, await importSPKI(config.publicKeyPem, 'RS256'), { issuer: config.issuer, audience: config.syncAudience, currentDate: now });
     expect(verified.payload.sub).toBe(decodeJwt(original.accessToken).sub);
     expect(verified.payload.exp! - verified.payload.iat!).toBe(900);

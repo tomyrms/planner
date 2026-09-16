@@ -16,6 +16,8 @@ export interface AuthConfig {
   keyId: string;
   /** Independent 256-bit key, hex encoded. Never derive this from a JWT key. */
   refreshDerivationKey: string;
+  /** Public PowerSync URL handed to the iPhone with each sync token (never compiled into the app). */
+  syncEndpoint?: string;
   now?: () => Date;
 }
 
@@ -220,9 +222,13 @@ export class AuthService {
     return identity;
   }
 
-  async syncToken(identity: AuthIdentity): Promise<{ token: string; expiresAt: string }> {
+  async syncToken(identity: AuthIdentity): Promise<{ token: string; expiresAt: string; endpoint: string | null }> {
     const now = new Date(Math.floor(this.now().getTime() / 1000) * 1000);
-    return { token: await this.sign(identity, randomUUID(), now, this.config.syncAudience, 'sync'), expiresAt: new Date(now.getTime() + ACCESS_SECONDS * 1000).toISOString() };
+    return {
+      token: await this.sign(identity, randomUUID(), now, this.config.syncAudience, 'sync'),
+      expiresAt: new Date(now.getTime() + ACCESS_SECONDS * 1000).toISOString(),
+      endpoint: this.config.syncEndpoint ?? null,
+    };
   }
 
   async revokeDevice(deviceId: string, userId?: string): Promise<boolean> {

@@ -39,6 +39,10 @@ services:
       AUTH_PUBLIC_KEY_PATH: /run/planner-secrets/auth-public.pem
       AUTH_REFRESH_DERIVATION_KEY: ${AUTH_REFRESH_DERIVATION_KEY}
       MIN_CLIENT_VERSION: ${MIN_CLIENT_VERSION:-0.1.0}
+      # Addresses the iPhone uses (HTTPS in production); never compiled into the public app.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      PUBLIC_SYNC_URL: ${PUBLIC_SYNC_URL:-}
+      POWERSYNC_URL: ${POWERSYNC_URL:-}
       ASSISTANT_PROVIDER: ${ASSISTANT_PROVIDER:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}

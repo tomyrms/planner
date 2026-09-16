@@ -17,7 +17,7 @@ export const authSchemas = {
     refreshToken: z.string(),
     serverGeneration: z.uuid(),
   }),
-  sync: z.strictObject({ token: z.string(), expiresAt: z.iso.datetime() }),
+  sync: z.strictObject({ token: z.string(), expiresAt: z.iso.datetime(), endpoint: z.url().nullable() }),
   logout: z.strictObject({ revoked: z.literal(true) }),
   error: z.strictObject({ error: z.strictObject({ code: z.string(), message: z.string(), requestId: z.string() }) }),
 };
