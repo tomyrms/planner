@@ -47,10 +47,43 @@ jobs:
           tail -n 3 build/xcodebuild.log
           exit "$status"
 
+      # Unsigned Release IPA for sideloading: iloader (or another sideloader) signs it with the free Apple ID
+      # and changes the bundle identifier to <id>.<TEAMID>. The build number is the run number.
+      - name: Unsigned Release IPA
+        if: github.event_name != 'pull_request'
+        working-directory: ios
+        run: |
+          status=0
+          xcodebuild build \
+            -project Planner.xcodeproj -scheme Planner -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            > build/xcodebuild-release.log 2>&1 || status=$?
+          grep -E '(error|warning): ' build/xcodebuild-release.log | sort -u || true
+          tail -n 3 build/xcodebuild-release.log
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          app=build/DerivedData/Build/Products/Release-iphoneos/Planner.app
+          version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$app/Info.plist")
+          build=$(/usr/bin/plutil -extract CFBundleVersion raw "$app/Info.plist")
+          mkdir -p build/ipa/Payload
+          cp -R "$app" build/ipa/Payload/
+          (cd build/ipa && zip -qry "../Planner-$version-$build.ipa" Payload)
+          echo "IPA_NAME=Planner-$version-$build" >> "$GITHUB_ENV"
+          ls -l build/*.ipa
+
+      - name: Publish the IPA
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.IPA_NAME }}
+          path: ios/build/${{ env.IPA_NAME }}.ipa
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Keep the full log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: xcodebuild-log
-          path: ios/build/xcodebuild.log
+          path: ios/build/xcodebuild*.log
           retention-days: 7

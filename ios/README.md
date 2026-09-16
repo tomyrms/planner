@@ -1,6 +1,6 @@
 # Planner — app iPhone
 
-App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031). Le Mac sert à installer l'app sur l'iPhone et à la tester. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
+App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031) et publie un **IPA non signé** à installer avec iLoader. Le Mac n'est plus qu'une solution de secours. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
 
 État : étape 4 — app vide qui affiche version, build, version d'iOS et modèle de l'iPhone.
 
@@ -13,7 +13,23 @@ App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ;
 | `Config/*.xcconfig` | Réglages de build (version, identifiant, Swift 6, isolation Main Actor). `Local.xcconfig` (non versionné) porte l'équipe de signature. |
 | `scripts/build-device.sh` | Build + installation sur l'iPhone branché, en ligne de commande. |
 
-## Sur le Mac (première fois)
+## Installer avec iLoader (méthode principale, sans Mac)
+
+Pas encore essayé : signaler toute étape qui bloque.
+
+1. Ouvrir le dernier run vert du workflow **iOS** : https://github.com/tomyrms/planner/actions/workflows/ios.yml (connecté à GitHub).
+2. En bas, **Artifacts** : télécharger `Planner-<version>-<build>` (un zip), l'extraire : il contient `Planner-<version>-<build>.ipa`.
+3. Dans iLoader (https://github.com/nab138/iloader, iPhone branché, identifiant Apple connecté) : **importer l'IPA** et l'installer.
+4. Au premier lancement : **Réglages > Général > VPN et gestion de l'appareil** > faire confiance au développeur ; **Mode développeur** activé si iOS le demande.
+
+À savoir avec un identifiant Apple gratuit :
+
+- iLoader signe l'IPA et **change l'identifiant de l'app** en `io.github.tomyrms.planner.<ÉQUIPE>` ; il crée aussi un groupe d'app `group.io.github.tomyrms.planner.<ÉQUIPE>`. Le code ne doit donc jamais supposer l'identifiant exact.
+- L'app expire après **7 jours** : réinstaller le même IPA (ou un plus récent) suffit, les données restent si l'identifiant ne change pas.
+- 3 apps sideloadées actives au plus et 10 identifiants d'app par semaine : chaque extension future (widget) consomme un identifiant.
+- Le numéro de build de l'IPA est le numéro du run GitHub ; la version affichée dans l'app permet de vérifier ce qui est installé.
+
+## Sur le Mac (secours : build local, journaux Xcode)
 
 Pas encore essayé sur le MacBook Air : signaler toute étape qui bloque.
 
