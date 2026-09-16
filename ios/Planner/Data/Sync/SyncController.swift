@@ -48,11 +48,24 @@ final class SyncController {
         try? await db.disconnect()
     }
 
-    /// "Réessayer" in Settings: uploads resume; a stopped engine reconnects.
+    /// "Réessayer" in Settings: uploads resume and the engine reconnects. The SDK keeps showing
+    /// "connecting" after a disconnect, so the reconnection never depends on that state.
     func retry() async {
         await connector.clearBlock()
-        if !status.connected && !status.connecting {
-            try? await db.connect(connector: connector, crudThrottle: 1, retryDelay: 5)
+        do {
+            try await db.connect(connector: connector, crudThrottle: 1, retryDelay: 5)
+        } catch {
+            apply(.actionRequired(status: 0, code: "CONNECT_FAILED"))
+        }
+    }
+
+    /// Back in the foreground: a block the server side may have fixed meanwhile is tried again.
+    func resumeIfRecoverable() async {
+        switch block {
+        case .serverMisconfigured, .actionRequired(status: 0, _):
+            await retry()
+        default:
+            break
         }
     }
 

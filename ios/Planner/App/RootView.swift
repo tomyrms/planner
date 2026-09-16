@@ -3,6 +3,7 @@ import SwiftUI
 /// Pairing first; then the four tabs of a paired iPhone.
 struct RootView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -19,5 +20,9 @@ struct RootView: View {
             }
         }
         .task { await app.launch() }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, case .ready(let services) = app.phase else { return }
+            Task { await services.sync.resumeIfRecoverable() }
+        }
     }
 }

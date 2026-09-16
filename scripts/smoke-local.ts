@@ -50,6 +50,12 @@ try {
   expectStatus('auth/refresh', rotated.status, 200);
   const sync = await call('GET', '/api/v1/auth/sync-token', { token: rotated.json.accessToken });
   expectStatus('auth/sync-token', sync.status, 200);
+  // The iPhone learns the sync address here: a stale API image once returned none.
+  const expectedEndpoint = config.auth.syncEndpoint ?? null;
+  if (sync.json.endpoint !== expectedEndpoint) {
+    throw new Error(`Adresse de sync ${sync.json.endpoint ?? 'absente'}, attendu ${expectedEndpoint ?? 'aucune'} : reconstruire l'API (docker compose --profile app up -d --build)`);
+  }
+  steps.push(`adresse de sync → ${expectedEndpoint ?? 'aucune'}`);
   const jwks = await call('GET', '/.well-known/jwks.json');
   expectStatus('jwks', jwks.status, 200);
   if (jwks.json.keys.some((key: Record<string, unknown>) => 'd' in key)) throw new Error('Clé privée exposée dans le JWKS');
