@@ -2,14 +2,24 @@
 
 App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031) et publie un **IPA non signé** à installer avec iLoader. Le Mac n'est plus qu'une solution de secours. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
 
-État : étape 4 — app vide qui affiche version, build, version d'iOS et modèle de l'iPhone.
+État : étape 5 en cours — appairage par lien, Aujourd'hui, Inbox, À venir, listes, Terminées, Corbeille, recherche, éditeur, Réglages > Synchronisation, sur PowerSync Swift 1.16.2. Calendrier et Assistant affichent un écran d'attente. Compilé par GitHub ; **pas encore essayé sur l'iPhone**.
+
+## Appairer l'app
+
+L'app ne contient aucune adresse de serveur (l'IPA est public). Le backend doit être joignable **en HTTPS** depuis l'iPhone, avec `PUBLIC_API_URL` et `PUBLIC_SYNC_URL` réglés sur ses adresses publiques. Puis, sur le serveur :
+
+```bash
+npm run admin -- pair --name "iPhone"
+```
+
+Coller le lien `planner://pair?…` affiché dans l'écran d'appairage (valable 10 minutes, une seule fois).
 
 ## Structure
 
 | Chemin | Rôle |
 |---|---|
 | `Planner.xcodeproj` | Projet Xcode. Le dossier `Planner/` y est **synchronisé** : tout fichier ajouté dans ce dossier fait partie de l'app, sans modifier le projet. |
-| `Planner/` | Code et ressources de l'app. |
+| `Planner/` | Code et ressources : `App` (démarrage, services), `Domain` (dates, tâches, sections), `Data` (base PowerSync, file, API, sync), `Features` (écrans), `DesignSystem`. |
 | `Config/*.xcconfig` | Réglages de build (version, identifiant, Swift 6, isolation Main Actor). `Local.xcconfig` (non versionné) porte l'équipe de signature. |
 | `scripts/build-device.sh` | Build + installation sur l'iPhone branché, en ligne de commande. |
 
