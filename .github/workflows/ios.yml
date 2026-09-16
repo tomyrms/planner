@@ -1,0 +1,56 @@
+name: iOS
+
+# Compile proof for the iPhone app (ADR-031). Installing and testing on the iPhone stays on the Mac.
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (Xcode 26.3, SDK iOS 26.2)
+    # Same toolchain as the MacBook Air (ADR-023); Xcode 26.3 is installed on this image, not its default.
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun swift --version
+
+      - name: Build for any iPhone, unsigned, warnings as errors
+        working-directory: ios
+        run: |
+          mkdir -p build
+          status=0
+          xcodebuild build \
+            -project Planner.xcodeproj -scheme Planner -configuration Debug \
+            -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
+            > build/xcodebuild.log 2>&1 || status=$?
+          grep -E '(error|warning): ' build/xcodebuild.log | sort -u || true
+          tail -n 3 build/xcodebuild.log
+          exit "$status"
+
+      - name: Keep the full log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcodebuild-log
+          path: ios/build/xcodebuild.log
+          retention-days: 7

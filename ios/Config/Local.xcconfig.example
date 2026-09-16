@@ -1,0 +1,7 @@
+// Copy to Local.xcconfig (ignored by Git) on the Mac that signs the app.
+// Team ID: Xcode > Settings > Accounts > your Apple ID > team, or the 10-character ID shown in
+// Keychain Access on the "Apple Development" certificate (Organizational Unit).
+DEVELOPMENT_TEAM = ABCDE12345
+
+// A free Apple ID may refuse an identifier already registered by someone else: use your own suffix.
+// PRODUCT_BUNDLE_IDENTIFIER = io.github.tomyrms.planner.dev

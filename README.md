@@ -1,4 +1,8 @@
-# Planner — backend
+# Planner
+
+App iPhone personnelle de tâches et de calendrier avec assistant IA : backend à la racine, app SwiftUI dans [`ios/`](ios/README.md) (compilée par GitHub Actions à chaque push). La spécification complète (pack de documentation, ADR) est tenue hors de ce dépôt ; les chemins `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/…` y renvoient.
+
+## Backend
 
 Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la voix : temps, fixtures partagées, PostgreSQL, appairage, upload des commandes, PowerSync auto-hébergé, export, sauvegarde, assistant, transcription). Règles : `AGENTS.md` et `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md`. Décisions d'implémentation : ADR-027 à ADR-030.
 

@@ -1,0 +1,4 @@
+#include "Shared.xcconfig"
+
+// Optional, not versioned: DEVELOPMENT_TEAM (and a bundle identifier override if needed).
+#include? "Local.xcconfig"

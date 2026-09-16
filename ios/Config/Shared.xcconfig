@@ -1,0 +1,22 @@
+// Settings shared by every configuration (ADR-023, ADR-031, 03_iOS/01_SwiftUI_Architecture.md).
+// Build settings written in project.pbxproj take precedence: keep these values out of it.
+
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+PRODUCT_BUNDLE_IDENTIFIER = io.github.tomyrms.planner
+
+// Xcode 26.3 / SDK iOS 26.2, iPhone only.
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+TARGETED_DEVICE_FAMILY = 1
+
+// Swift 6 language mode; the app target is isolated to the main actor by default.
+// Approachable Concurrency turns on NonisolatedNonsendingByDefault (SE-0461): a nonisolated async
+// function runs on its caller's actor, so CPU work is moved off explicitly with @concurrent.
+SWIFT_VERSION = 6.0
+SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
+
+// Signing: the team is set in Local.xcconfig (not versioned), never in the project file.
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =

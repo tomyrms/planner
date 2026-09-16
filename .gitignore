@@ -9,3 +9,11 @@ coverage/
 *.log
 *.tsbuildinfo
 backups/
+
+# iOS (Xcode)
+ios/build/
+ios/Config/Local.xcconfig
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.DS_Store

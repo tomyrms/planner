@@ -8,6 +8,8 @@ Lire d'abord `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md` et sa table 
 - Voix : jamais d'audio en base, en sauvegarde ou dans les journaux ; jamais le texte transcrit dans les journaux. Chaque envoi au fournisseur compte dans le budget.
 - Nouvelle table : la classer dans `REQUIRED_TABLES` ou `TRANSIENT_TABLES` (`src/infrastructure/db/backup-plan.ts`), sinon un test échoue.
 - Partager le projet : `scripts/export-review.ps1`, jamais un ZIP du dossier.
+- **Dépôt public** (`github.com/tomyrms/planner`, ADR-031) : rien de personnel ni de secret, identité Git anonyme (`tomy.rms`, adresse noreply) configurée dans ce dépôt ; vérifier chaque diff avant push.
+- App iPhone (`ios/`) : écrite depuis Windows, **compilée par le workflow `iOS`** (Xcode 26.3, SDK iOS 26.2). Ne dire « compilé » que si ce workflow est vert sur le commit, « testé » qu'après essai sur l'iPhone. Swift 6, isolation Main Actor par défaut, Approachable Concurrency ; ajouter un fichier dans `ios/Planner/` suffit (dossier synchronisé), jamais d'édition manuelle de `project.pbxproj` pour cela ; réglages dans `ios/Config/*.xcconfig`, équipe de signature seulement dans `Local.xcconfig` (ignoré).
 - Assistant : changer le prompt, un schéma d'outil ou la logique temporelle impose de rejouer `fixtures/assistant/eval-v1.json` (test, puis `npm run eval:assistant` si une clé existe) et de monter `PROMPT_VERSION` si le prompt change. Jamais de contenu (prompt, arguments, notes) dans les journaux.
 - Pas de clés ou données personnelles dans le code, les fixtures, les logs ou Git. `.env` et `.local/` sont ignorés.
 - Les tests d'intégration utilisent des schémas PostgreSQL jetables et dédiés, jamais une base de production. Fournir `DATABASE_URL` de développement.
