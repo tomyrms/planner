@@ -1,0 +1,53 @@
+name: planner-dev
+services:
+  postgres:
+    image: postgres:18.6-bookworm@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af
+    environment:
+      POSTGRES_DB: planner
+      POSTGRES_USER: planner_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run setup:local}
+      PLANNER_API_PASSWORD: ${PLANNER_API_PASSWORD:?Run npm run setup:local}
+    ports:
+      - "127.0.0.1:55437:5432"
+    volumes:
+      - planner-postgres:/var/lib/postgresql
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planner_owner -d planner"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: .
+    profiles: [app]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 4317
+      DATABASE_URL: postgresql://planner_api:${PLANNER_API_PASSWORD}@postgres:5432/planner
+      AUTH_ISSUER: ${AUTH_ISSUER}
+      AUTH_API_AUDIENCE: planner-api
+      AUTH_SYNC_AUDIENCE: planner-sync
+      AUTH_KEY_ID: ${AUTH_KEY_ID}
+      AUTH_PRIVATE_KEY_PATH: /run/planner-secrets/auth-private.pem
+      AUTH_PUBLIC_KEY_PATH: /run/planner-secrets/auth-public.pem
+      AUTH_REFRESH_DERIVATION_KEY: ${AUTH_REFRESH_DERIVATION_KEY}
+    ports:
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - ./.local/auth-private.pem:/run/planner-secrets/auth-private.pem:ro
+      - ./.local/auth-public.pem:/run/planner-secrets/auth-public.pem:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4317/api/v1/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+volumes:
+  planner-postgres:

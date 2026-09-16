@@ -1,0 +1,43 @@
+{
+  "name": "planner-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/time tests/app.test.ts",
+    "test:integration": "vitest run tests/db tests/auth",
+    "db:migrate": "tsx src/cli/migrate.ts",
+    "admin": "tsx src/cli/admin.ts",
+    "setup:local": "node scripts/setup-local.mjs",
+    "openapi": "tsx src/cli/openapi.ts",
+    "smoke:local": "tsx scripts/smoke-local.ts",
+    "check": "npm run typecheck && npm run build && npm test"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.4",
+    "jose": "6.2.12",
+    "pg": "8.23.0",
+    "uuid": "14.0.2",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
