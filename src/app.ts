@@ -1,12 +1,13 @@
 import Fastify, { LogController, type FastifySchema, type RouteOptions } from 'fastify';
 import type { Pool } from 'pg';
+import { AssistantService, registerAssistantRoutes, type AssistantLimits, type ReasoningProvider } from './modules/assistant/index.js';
 import { registerAuthRoutes, type AuthConfig } from './modules/auth/index.js';
 import { registerExportRoutes } from './modules/export/index.js';
 import { registerSyncRoutes } from './modules/sync/index.js';
 import { registerErrorHandler } from './errors.js';
 
 export const DEFAULT_MINIMUM_CLIENT_VERSION = '0.1.0';
-const BEARER_ROUTES = new Set(['/api/v1/auth/sync-token', '/api/v1/auth/logout', '/api/v1/sync/mutations', '/api/v1/export']);
+const PUBLIC_ROUTES = new Set(['/api/v1/health/live', '/api/v1/health/ready', '/api/v1/auth/pair/complete', '/api/v1/auth/refresh', '/.well-known/jwks.json', '/openapi.json']);
 
 type JsonObject = Record<string, unknown>;
 const liveSchema: FastifySchema = {
@@ -15,6 +16,7 @@ const liveSchema: FastifySchema = {
 const readyBody = {
   type: 'object', required: ['status', 'scope', 'database', 'sync'], additionalProperties: false,
   properties: {
+    assistant: { type: 'string' },
     status: { enum: ['ready', 'not_ready'], type: 'string' },
     scope: { const: 'backend-sync', type: 'string' },
     database: { enum: ['ready', 'unavailable'], type: 'string' },
@@ -28,6 +30,8 @@ export interface BuildAppOptions {
   logger?: boolean;
   sync?: { minimumClientVersion?: string; clock?: () => Date };
   exportIntervalMs?: number;
+  /** Without a provider the assistant routes answer 503 ASSISTANT_UNAVAILABLE. */
+  assistant?: { provider: ReasoningProvider | null; limits?: Partial<AssistantLimits>; clock?: () => Date };
 }
 
 export async function buildApp(options: BuildAppOptions) {
@@ -52,7 +56,7 @@ export async function buildApp(options: BuildAppOptions) {
       paths[route.url]![method.toLowerCase()] = {
         responses,
         ...(schema?.body ? { requestBody: { required: true, content: { 'application/json': { schema: schema.body } } } } : {}),
-        ...(BEARER_ROUTES.has(route.url) ? { security: [{ bearerAuth: [] }] } : {}),
+        ...(PUBLIC_ROUTES.has(route.url) ? {} : { security: [{ bearerAuth: [] }] }),
       };
     }
   });
@@ -67,6 +71,17 @@ export async function buildApp(options: BuildAppOptions) {
     minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
     ...(options.sync?.clock ? { clock: options.sync.clock } : {}),
   });
+  const assistant = new AssistantService(options.pool, options.assistant?.provider ?? null, {
+    ...(options.assistant?.limits ? { limits: options.assistant.limits } : {}),
+    ...(options.assistant?.clock ? { clock: options.assistant.clock } : {}),
+    // Technical events only: identifiers, statuses, counts. Never prompts, arguments or notes.
+    log: (event) => app.log.info(event, 'assistant'),
+  });
+  const assistantName = options.assistant?.provider ? `${options.assistant.provider.name}:${options.assistant.provider.model}` : 'disabled';
+  registerAssistantRoutes(app, {
+    service: assistant, auth,
+    minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
+  });
   registerExportRoutes(app, {
     pool: options.pool, auth,
     ...(options.exportIntervalMs === undefined ? {} : { intervalMs: options.exportIntervalMs }),
@@ -80,17 +95,18 @@ export async function buildApp(options: BuildAppOptions) {
       const result = await options.pool.query<{ generation: string; sync_provisioned: boolean }>(
         "SELECT generation, EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'powersync') AS sync_provisioned FROM server_meta LIMIT 1");
       if (result.rowCount !== 1) throw new Error('Missing generation');
-      return { status: 'ready', scope: 'backend-sync', database: 'ready', sync: result.rows[0]!.sync_provisioned ? 'provisioned' : 'not_provisioned' };
+      return { status: 'ready', scope: 'backend-sync', database: 'ready', sync: result.rows[0]!.sync_provisioned ? 'provisioned' : 'not_provisioned', assistant: assistantName };
     } catch {
-      return reply.code(503).send({ status: 'not_ready', scope: 'backend-sync', database: 'unavailable', sync: 'unknown' });
+      return reply.code(503).send({ status: 'not_ready', scope: 'backend-sync', database: 'unavailable', sync: 'unknown', assistant: assistantName });
     }
   });
   await app.ready();
   return {
     app,
+    assistant,
     openApi: {
       openapi: '3.1.0',
-      info: { title: 'Planner backend — étape 2', version: '0.2.0', description: 'Auth, santé, upload des commandes de synchronisation et export. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
+      info: { title: 'Planner backend — étape 3', version: '0.3.0', description: 'Auth, santé, upload des commandes de synchronisation, export et assistant. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
       paths,
       components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
     },

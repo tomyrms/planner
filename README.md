@@ -1,6 +1,6 @@
 # Planner — backend
 
-Backend du planner iPhone (étapes 1 et 2 de la roadmap : temps, fixtures partagées, PostgreSQL, appairage, upload des commandes, PowerSync auto-hébergé, export, sauvegarde). Règles : `AGENTS.md` et `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md`. Décisions d'implémentation : ADR-027 et ADR-028.
+Backend du planner iPhone (étapes 1 à 3 de la roadmap : temps, fixtures partagées, PostgreSQL, appairage, upload des commandes, PowerSync auto-hébergé, export, sauvegarde, assistant). Règles : `AGENTS.md` et `../IOS_AI_PLANNER_DEEP_RESEARCH_2026-09-15/AGENTS.md`. Décisions d'implémentation : ADR-027 à ADR-029.
 
 ## Ce qui existe
 
@@ -8,16 +8,18 @@ Backend du planner iPhone (étapes 1 et 2 de la roadmap : temps, fixtures partag
 |---|---|
 | `src/modules/time` | Valeurs temporelles (date flottante, heure + fuseau, changements d'heure), récurrence fixe et après complétion, identités d'occurrence, plan de rappels. |
 | `fixtures/time` | Cas littéraux JSON que le futur client Swift devra aussi passer. |
-| `src/modules/sync` | `POST /api/v1/sync/mutations` : exécuteur de commandes (verrou, reçu, précondition, effet, révision) et handlers par agrégat (tâches, occurrences et séries, rappels, listes). C'est le service de domaine unique, que l'assistant appellera aussi. |
+| `src/modules/sync` | `POST /api/v1/sync/mutations` : exécuteur de commandes (verrou, reçu, précondition, effet, révision) et handlers par agrégat (tâches, occurrences et séries, rappels, listes). C'est le service de domaine unique, que l'assistant utilise aussi (`executePlan`). |
 | `fixtures/sync` | Scénarios de conflit JSON (commandes → résultat attendu), exécutés contre PostgreSQL. |
 | `src/modules/domain` | Dérivés partagés : colonnes temporelles, bases de rappel, texte de recherche normalisé. |
+| `src/modules/assistant` | Tours durables (`/api/v1/assistant/*`, JSON ou SSE), outils du catalogue v1, plan appliqué par l'exécuteur de commandes, politique R0–R3, propositions, Undo groupé, fournisseurs scripté, à règles et DeepSeek. |
+| `fixtures/assistant` | Jeu d'évaluation versionné (24 cas) : test déterministe et évaluation réelle. |
 | `src/modules/export` | `GET /api/v1/export` : archive JSON versionnée, instantané cohérent, un export par minute par appareil. |
 | `src/modules/auth` | Appairage depuis la console, rotation des refresh tokens, jeton de sync, déconnexion, JWKS. |
-| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0004). |
+| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0005). |
 | `powersync/` | Configuration du service PowerSync et Sync Streams (lecture seule, filtrée par utilisateur). |
 | `src/infrastructure/db` | Runner de migrations, provisionnement PowerSync, règles de sauvegarde, rotation de génération. |
 
-Pas encore : assistant IA (étape 3), `GET /diagnostics`, purge planifiée, import d'un export, client iPhone.
+Pas encore : voix (transcription), `GET /diagnostics`, purge planifiée, import d'un export, client iPhone. L'adaptateur DeepSeek n'a jamais appelé le vrai service (pas de clé).
 
 ## Démarrer (Windows)
 
@@ -36,11 +38,22 @@ Pile complète dans Docker (API sur 127.0.0.1:4317, PowerSync sur 127.0.0.1:4318
 
 ```powershell
 docker compose --profile app up -d --build --wait
-.\scripts\npm-local.ps1 run smoke:local       # auth, upload de commandes, rejeu, 426, 409
+.\scripts\npm-local.ps1 run smoke:local       # auth, upload de commandes, rejeu, 426, 409, tour d'assistant et Undo
 .\scripts\npm-local.ps1 run spike:powersync   # client PowerSync Node : critères ADR-004 n° 2, 3, 5, 6, 7, 8
 ```
 
-Le spike appaire puis révoque un appareil temporaire et laisse ses tâches « [spike] » dans la corbeille.
+Le spike appaire puis révoque un appareil temporaire et laisse ses tâches « [spike] » dans la corbeille. Fumée et spike appairent chacun un appareil : la limite anti-abus (10 appairages par heure par adresse) peut les bloquer après plusieurs lancements ; en développement seulement, `docker compose exec -T postgres psql -U planner_owner -d planner -c "DELETE FROM auth_pair_rate_limits"`.
+
+## Assistant
+
+Sans `DEEPSEEK_API_KEY`, le développement utilise un fournisseur à règles déterministe (les cinq demandes de référence) ; en production sans clé, l'assistant répond 503. Avec une clé dans `.env` :
+
+```powershell
+.\scripts\npm-local.ps1 run eval:assistant                 # 24 cas contre le vrai modèle, schéma jetable
+.\scripts\npm-local.ps1 run eval:assistant -- reference-free-slots   # un seul cas
+```
+
+Réglages : `ASSISTANT_PROVIDER` (`deepseek`, `rules`, `disabled`), `DEEPSEEK_MODEL` (`deepseek-flash`), `DEEPSEEK_THINKING` (`false`), `ASSISTANT_MONTHLY_TOKEN_BUDGET`.
 
 Appairer un appareil (console de confiance uniquement ; le secret s'affiche une fois et expire en 10 minutes) :
 
@@ -65,7 +78,7 @@ docker compose --profile app up -d --wait
 ## Tests
 
 - `test:unit` : module temporel, règles de sauvegarde et frontière HTTP, sans base.
-- `test:integration` : PostgreSQL dans un schéma jetable par suite (contraintes, migrations, rôles, restaurabilité, provisionnement, commandes et concurrence, route de sync, export, fixtures de conflits). Nécessite `DATABASE_ADMIN_URL`.
+- `test:integration` : PostgreSQL dans un schéma jetable par suite (contraintes, migrations, rôles, restaurabilité, provisionnement, commandes et concurrence, route de sync, export, fixtures de conflits, assistant et jeu d'évaluation scripté). Nécessite `DATABASE_ADMIN_URL`.
 - `smoke:local` et `spike:powersync` demandent la pile Docker démarrée.
 - Aucun test Swift/iPhone n'est exécuté depuis Windows.
 

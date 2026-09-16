@@ -72,7 +72,7 @@ describe('PowerSync provisioning', () => {
     const privilege = async (table: string, kind: string) => (await admin.query<{ ok: boolean }>(
       'SELECT has_table_privilege($1, $2, $3) AS ok', [options.replicationRole, `"${db.schema}".${table}`, kind])).rows[0]!.ok;
     for (const table of SYNC_TABLES) expect(await privilege(table, 'SELECT'), table).toBe(true);
-    for (const table of ['command_receipts', 'tombstones', 'auth_refresh_tokens', 'devices', 'planner_migrations']) {
+    for (const table of ['command_receipts', 'tombstones', 'auth_refresh_tokens', 'devices', 'planner_migrations', 'assistant_undos']) {
       expect(await privilege(table, 'SELECT'), table).toBe(false);
     }
     expect(await privilege('tasks', 'UPDATE')).toBe(false);

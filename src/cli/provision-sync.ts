@@ -22,7 +22,7 @@ try {
     replicationPassword: parsed.data.PLANNER_POWERSYNC_PASSWORD,
     storagePassword: parsed.data.PLANNER_POWERSYNC_STORAGE_PASSWORD,
   });
-  console.log('PowerSync provisionné : rôle de réplication en lecture seule, publication « powersync » (5 tables), base de stockage séparée.');
+  console.log('PowerSync provisionné : rôle de réplication en lecture seule, publication « powersync » (10 tables), base de stockage séparée.');
 } finally {
   await pool.end();
 }

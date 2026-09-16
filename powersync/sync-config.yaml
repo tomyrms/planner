@@ -28,6 +28,27 @@ streams:
                absolute_date, absolute_time, absolute_time_zone, state, created_at, updated_at
         FROM reminders WHERE user_id = auth.user_id() AND deleted_at IS NULL
 
+  # Assistant history, read-only on the phone (03_Data_Model.md §7, §11). Never synced: request hashes,
+  # calendar snapshots, token counts, stored plans (only their hash and preview), Undo request records.
+  assistant:
+    auto_subscribe: true
+    queries:
+      - SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, conversation_id, seq, role, kind, text, original_transcript, transcription_id, turn_id,
+               revises_message_id, created_at
+        FROM messages WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, conversation_id, user_message_id, status, risk_class, reply_message_id, error_code, created_at, finished_at
+        FROM assistant_turns WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, turn_id, plan_hash, preview, state, expires_at, decided_at, created_at
+        FROM assistant_proposals WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, group_id, plan_index, turn_id, proposal_id, aggregate_type, aggregate_id, command_type, changes,
+               resulting_revision, undo_state, undo_expires_at, undo_of_action_id, created_at
+        FROM ai_actions WHERE user_id = auth.user_id()
+
   # The database lifetime marker (restore detection, 04_Backend/05_Homelab_Deployment.md).
   server_meta:
     auto_subscribe: true

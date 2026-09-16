@@ -1,0 +1,11 @@
+export * from './provider.js';
+export { DeepSeekProvider, type DeepSeekOptions } from './providers/deepseek.js';
+export { RuleBasedProvider } from './providers/rules.js';
+export { ScriptedProvider, callTools, reply, toolCall, type ScriptStep } from './providers/scripted.js';
+export { AssistantError, AssistantService, DEFAULT_LIMITS, turnRequestSchema, type AssistantLimits, type Identity, type TurnEvent, type TurnRequest } from './service.js';
+export { registerAssistantRoutes, type AssistantRouteOptions } from './routes.js';
+export { toolSchemas, toolSpecs, type ToolName } from './tools/catalog.js';
+export { evaluateRisk } from './risk.js';
+export { claimsAnEffect } from './format.js';
+export { ASSISTANT_NAMESPACE, derivedId } from './stage.js';
+export { PROMPT_VERSION } from './prompt.js';

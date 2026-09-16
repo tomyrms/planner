@@ -27,7 +27,7 @@ describe('API boundary', () => {
   });
   it('reports whether PowerSync replication is provisioned', async () => {
     const provisioned = await setup(vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ generation: 'g', sync_provisioned: true }] }));
-    expect((await provisioned.app.inject('/api/v1/health/ready')).json()).toEqual({ status: 'ready', scope: 'backend-sync', database: 'ready', sync: 'provisioned' });
+    expect((await provisioned.app.inject('/api/v1/health/ready')).json()).toEqual({ status: 'ready', scope: 'backend-sync', database: 'ready', sync: 'provisioned', assistant: 'disabled' });
     const missing = await setup(vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ generation: 'g', sync_provisioned: false }] }));
     expect((await missing.app.inject('/api/v1/health/ready')).json()).toMatchObject({ status: 'ready', sync: 'not_provisioned' });
   });

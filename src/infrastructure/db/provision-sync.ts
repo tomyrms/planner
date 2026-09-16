@@ -2,7 +2,10 @@ import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import type pg from 'pg';
 
 /** The only tables PowerSync may read (03_Data_Model.md §11). Receipts, auth and tombstones stay private. */
-export const SYNC_TABLES = ['projects', 'tasks', 'task_occurrences', 'reminders', 'server_meta'] as const;
+export const SYNC_TABLES = [
+  'projects', 'tasks', 'task_occurrences', 'reminders', 'server_meta',
+  'conversations', 'messages', 'assistant_turns', 'assistant_proposals', 'ai_actions',
+] as const;
 
 export interface SyncProvisioning {
   /** LOGIN REPLICATION role used by PowerSync to read the WAL of the planner database. */

@@ -13,7 +13,7 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/time tests/ops tests/app.test.ts",
-    "test:integration": "vitest run tests/db tests/auth tests/sync",
+    "test:integration": "vitest run tests/db tests/auth tests/sync tests/assistant",
     "db:migrate": "tsx src/cli/migrate.ts",
     "db:provision-sync": "tsx src/cli/provision-sync.ts",
     "backup": "tsx src/cli/backup.ts",
@@ -22,7 +22,8 @@
     "openapi": "tsx src/cli/openapi.ts",
     "smoke:local": "tsx scripts/smoke-local.ts",
     "check": "npm run typecheck && npm run build && npm test",
-    "spike:powersync": "tsx scripts/spike-powersync.ts"
+    "spike:powersync": "tsx scripts/spike-powersync.ts",
+    "eval:assistant": "tsx scripts/eval-assistant.ts"
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",

@@ -1,6 +1,6 @@
 // Local end-to-end check against a running API (npm run smoke:local).
 // Uses the trusted console capability, then the public HTTP routes. Prints no secret or token.
-// Leaves one trashed "[smoke]" task in the local database, as a real device would.
+// Leaves trashed "[smoke]" tasks and one assistant conversation in the local database, as a real device would.
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/infrastructure/db/pool.js';
@@ -71,6 +71,22 @@ try {
   if (!replay.json.results.every((result: { outcome: string }) => result.outcome === 'duplicate')) throw new Error('Le rejeu a produit un nouvel effet');
   expectStatus('sync/mutations sans version', (await call('POST', '/api/v1/sync/mutations', { token, body: envelope })).status, 426);
   expectStatus('sync/mutations autre génération', (await call('POST', '/api/v1/sync/mutations', { token, clientVersion, body: { ...envelope, serverGeneration: randomUUID() } })).status, 409);
+
+  // Assistant: only with the deterministic stand-in, so that the smoke test never calls (nor pays) a real provider.
+  if (String(ready.json.assistant).startsWith('rules:')) {
+    const turn = await call('POST', '/api/v1/assistant/turns', { token, clientVersion, body: {
+      turnId: randomUUID(), conversationId: randomUUID(),
+      message: { id: randomUUID(), text: 'Demain rappelle-moi de [smoke] vérifier l’assistant vers 17h.', transcriptionId: null, revisesMessageId: null },
+      referenceInstant: new Date().toISOString(), timeZone: 'Europe/Zurich', unsyncedAggregateIds: [], calendarContext: null,
+    } });
+    expectStatus('assistant/turns', turn.status, 200);
+    if (turn.json.status !== 'completed' || turn.json.riskClass !== 'R1' || !turn.json.undo?.actionId) throw new Error(`Tour d'assistant inattendu : ${turn.json.status}/${turn.json.riskClass}`);
+    const undo = await call('POST', `/api/v1/assistant/actions/${turn.json.undo.actionId}/undo`, { token, clientVersion, body: { undoRequestId: randomUUID() } });
+    expectStatus('assistant undo', undo.status, 200);
+    if (undo.json.outcome !== 'undone') throw new Error('Undo non appliqué');
+  } else {
+    steps.push(`assistant (${ready.json.assistant}) non testé : fournisseur réel`);
+  }
 
   expectStatus('auth/logout', (await call('POST', '/api/v1/auth/logout', { token: rotated.json.accessToken })).status, 200);
   expectStatus('refresh après logout', (await call('POST', '/api/v1/auth/refresh', { body: { refreshToken: rotated.json.refreshToken } })).status, 401);
