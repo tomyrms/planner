@@ -227,6 +227,96 @@ struct VoiceMessageStoreTests {
         #expect(await api.calls == ["GET"])
     }
 
+    @Test func permissionGrantedAfterReleaseCannotStartRecording() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [])
+        let recorder = FakeVoiceRecorder()
+        let permission = PermissionGate()
+        let store = VoiceMessageStore(
+            api: api, assistant: FakeVoiceAssistant(), defaults: fixture.defaults, audioDirectory: fixture.directory,
+            recorder: recorder, requestRecordingPermission: { await permission.wait() }
+        )
+        defer { store.stop() }
+        let start = Task { await store.startRecording() }
+        await permission.waitUntilRequested()
+        await store.stopRecording() // Finger released while permission was unresolved.
+        permission.resolve(true)
+        let started = await start.value
+
+        #expect(!started)
+        #expect(recorder.startCount == 0)
+        #expect(store.phase == .idle)
+        #expect(!store.isPreparingRecording)
+        #expect(await api.calls.isEmpty)
+    }
+
+    @Test func stopKeepsADurableDraftWithoutCallingTheServer() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [])
+        let recorder = FakeVoiceRecorder()
+        let store = VoiceMessageStore(
+            api: api, assistant: FakeVoiceAssistant(), defaults: fixture.defaults, audioDirectory: fixture.directory,
+            recorder: recorder, requestRecordingPermission: { true }
+        )
+        defer { store.stop() }
+        let started = await store.startRecording()
+        #expect(started)
+        await store.stopRecording()
+
+        let draft = try #require(store.draft)
+        let data = try #require(fixture.defaults.data(forKey: "voice.draft"))
+        let persisted = try JSONDecoder().decode(VoiceDraft.self, from: data)
+        #expect(persisted == draft)
+        #expect(draft.state == .ready)
+        #expect(FileManager.default.fileExists(atPath: fixture.directory.appending(path: draft.fileName).path(percentEncoded: false)))
+        #expect(await api.calls.isEmpty)
+    }
+
+    @Test func backgroundDuringFinalizationKeepsTheRecording() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [])
+        let recorder = FakeVoiceRecorder()
+        recorder.delayFinish = true
+        let store = VoiceMessageStore(
+            api: api, assistant: FakeVoiceAssistant(), defaults: fixture.defaults, audioDirectory: fixture.directory,
+            recorder: recorder, requestRecordingPermission: { true }
+        )
+        defer { store.stop() }
+        _ = await store.startRecording()
+        let finish = Task { await store.stopRecording() }
+        await recorder.waitUntilFinishing()
+        #expect(store.phase == .finishing)
+        #expect(!recorder.isRecording)
+        await store.appWillResignActive()
+        recorder.finishNow()
+        await finish.value
+
+        let draft = try #require(store.draft)
+        #expect(draft.state == .ready)
+        #expect(FileManager.default.fileExists(atPath: fixture.directory.appending(path: draft.fileName).path(percentEncoded: false)))
+        #expect(await api.calls.isEmpty)
+    }
+
+    @Test func existingDraftIsNeverReplacedByANewHold() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let saved = draft()
+        try fixture.seed(saved)
+        let recorder = FakeVoiceRecorder()
+        let store = VoiceMessageStore(
+            api: FakeVoiceAPI(reads: []), assistant: FakeVoiceAssistant(), defaults: fixture.defaults,
+            audioDirectory: fixture.directory, recorder: recorder, requestRecordingPermission: { true }
+        )
+        defer { store.stop() }
+        let started = await store.startRecording()
+        #expect(!started)
+        #expect(store.draft?.transcriptionId == saved.transcriptionId)
+        #expect(recorder.startCount == 0)
+    }
+
     private func draft(state: VoiceDraft.State = .ready) -> VoiceDraft {
         VoiceDraft(
             transcriptionId: Self.transcriptionId, fileName: Self.audioFileName, durationMs: 2500,
@@ -348,5 +438,86 @@ private final class FakeVoiceAssistant: VoiceAssistant {
         try onAccept?(turn)
         accepted.append(turn)
         return true
+    }
+}
+
+@MainActor
+private final class PermissionGate {
+    private var pending: CheckedContinuation<Bool, Never>?
+    private var requested: CheckedContinuation<Void, Never>?
+
+    func wait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            pending = continuation
+            requested?.resume()
+            requested = nil
+        }
+    }
+
+    func waitUntilRequested() async {
+        if pending != nil { return }
+        await withCheckedContinuation { requested = $0 }
+    }
+
+    func resolve(_ allowed: Bool) {
+        pending?.resume(returning: allowed)
+        pending = nil
+    }
+}
+
+@MainActor
+private final class FakeVoiceRecorder: VoiceRecording {
+    var isRecording = false
+    var elapsed: TimeInterval = 2.5
+    var levels: [Float] = [0.2, 0.5]
+    var onAutomaticStop: ((VoiceRecorder.Outcome) -> Void)?
+    var startCount = 0
+    var delayFinish = false
+    private var file: URL?
+    private var pendingFinish: CheckedContinuation<Void, Never>?
+    private var finishWaiter: CheckedContinuation<Void, Never>?
+
+    func start(into url: URL) throws {
+        try Data([0]).write(to: url)
+        file = url
+        isRecording = true
+        startCount += 1
+    }
+
+    func stop() async -> VoiceRecorder.Outcome {
+        guard let file else { return .failed }
+        isRecording = false
+        if delayFinish {
+            await withCheckedContinuation { continuation in
+                pendingFinish = continuation
+                finishWaiter?.resume()
+                finishWaiter = nil
+            }
+        }
+        return .finished(file, durationMs: 2500)
+    }
+
+    func cancel() {
+        isRecording = false
+        if let file { try? FileManager.default.removeItem(at: file) }
+        file = nil
+    }
+
+    func interrupt() async {
+        let completion = onAutomaticStop
+        let outcome = await stop()
+        if case .finished(let url, let durationMs) = outcome {
+            completion?(.interrupted(url, durationMs: durationMs))
+        }
+    }
+
+    func waitUntilFinishing() async {
+        if pendingFinish != nil { return }
+        await withCheckedContinuation { finishWaiter = $0 }
+    }
+
+    func finishNow() {
+        pendingFinish?.resume()
+        pendingFinish = nil
     }
 }

@@ -3,6 +3,20 @@ import Foundation
 import Observation
 import SwiftUI
 
+@MainActor
+protocol VoiceRecording: AnyObject {
+    var isRecording: Bool { get }
+    var elapsed: TimeInterval { get }
+    var levels: [Float] { get }
+    var onAutomaticStop: ((VoiceRecorder.Outcome) -> Void)? { get set }
+    func start(into url: URL) throws
+    func stop() async -> VoiceRecorder.Outcome
+    func cancel()
+    func interrupt() async
+}
+
+extension VoiceRecorder: VoiceRecording {}
+
 /// One recoverable voice message, scoped to the conversation in which recording started.
 nonisolated struct VoiceDraft: Codable, Equatable, Sendable {
     enum State: String, Codable, Sendable {
@@ -25,14 +39,15 @@ nonisolated struct VoiceDraft: Codable, Equatable, Sendable {
 @Observable
 final class VoiceMessageStore {
     enum Phase: Equatable {
-        case idle, recording, checking, uploading, transcribing, delivering
+        case idle, recording, finishing, checking, uploading, transcribing, delivering
     }
 
     private(set) var phase: Phase = .idle
     private(set) var draft: VoiceDraft?
     var notice: String?
     var permissionDenied = false
-    let recorder = VoiceRecorder()
+    let recorder: any VoiceRecording
+    private(set) var isPreparingRecording = false
 
     private let api: any VoiceTranscriptionAPI
     private let assistant: any VoiceAssistant
@@ -40,18 +55,28 @@ final class VoiceMessageStore {
     private let audioDirectory: URL
     private let pollingTimeout: Duration
     private let pollingInterval: Duration
+    private let requestRecordingPermission: @MainActor () async -> Bool
     private static let draftKey = "voice.draft"
     @ObservationIgnored private var operation: Task<Void, Never>?
     @ObservationIgnored private var operationId: UUID?
     @ObservationIgnored private var expiry: Task<Void, Never>?
     @ObservationIgnored private var abandonments: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var recordingConversation: String?
+    @ObservationIgnored private var recordingIntent: UUID?
     @ObservationIgnored private var stopped = false
 
     init(
         api: any VoiceTranscriptionAPI, assistant: any VoiceAssistant,
         defaults: UserDefaults = .standard, audioDirectory: URL? = nil,
-        pollingTimeout: Duration = .seconds(75), pollingInterval: Duration = .seconds(2)
+        pollingTimeout: Duration = .seconds(75), pollingInterval: Duration = .seconds(2),
+        recorder: (any VoiceRecording)? = nil,
+        requestRecordingPermission: @escaping @MainActor () async -> Bool = {
+            switch VoiceRecorder.permission {
+            case .granted: true
+            case .undetermined: await VoiceRecorder.requestPermission()
+            default: false
+            }
+        }
     ) {
         self.api = api
         self.assistant = assistant
@@ -60,6 +85,8 @@ final class VoiceMessageStore {
             ?? URL.temporaryDirectory.appending(path: "PendingAudio", directoryHint: .isDirectory)
         self.pollingTimeout = pollingTimeout
         self.pollingInterval = pollingInterval
+        self.recorder = recorder ?? VoiceRecorder()
+        self.requestRecordingPermission = requestRecordingPermission
         if let data = defaults.data(forKey: Self.draftKey),
            var saved = try? JSONDecoder().decode(VoiceDraft.self, from: data) {
             if saved.conversationId == nil { saved.conversationId = assistant.conversationId }
@@ -68,7 +95,6 @@ final class VoiceMessageStore {
         removeUnreferencedFiles()
         recoverPreviouslyMissingAudio()
         if !expireIfNeeded() { scheduleExpiry() }
-        recorder.onAutomaticStop = { [weak self] outcome in self?.handle(outcome) }
     }
 
     var isWorking: Bool { phase != .idle && phase != .recording }
@@ -78,53 +104,75 @@ final class VoiceMessageStore {
 
     // MARK: - Recording
 
-    func startRecording() async {
-        guard !stopped, phase == .idle, draft == nil, recordingConversation == nil, assistant.canAcceptVoice else { return }
+    @discardableResult
+    func startRecording() async -> Bool {
+        guard !stopped, !Task.isCancelled, phase == .idle, recordingIntent == nil else { return false }
+        guard draft == nil else {
+            notice = "Un vocal est déjà conservé. Envoyez-le ou supprimez-le avant d’enregistrer."
+            return false
+        }
+        guard assistant.canAcceptVoice else {
+            notice = "Terminez la demande ou la correction en cours avant d’enregistrer."
+            return false
+        }
+        let intent = UUID()
+        recordingIntent = intent
         notice = nil
         recordingConversation = assistant.conversationId
-        switch VoiceRecorder.permission {
-        case .denied:
+        isPreparingRecording = true
+        let granted = await requestRecordingPermission()
+        // Release/cancel may have invalidated this request or a newer recording may have started.
+        guard recordingIntent == intent, !stopped else { return false }
+        guard !Task.isCancelled else {
+            cancelRecording()
+            return false
+        }
+        isPreparingRecording = false
+        guard granted else {
             permissionDenied = true
             cancelRecording()
-            return
-        case .undetermined:
-            guard await VoiceRecorder.requestPermission() else {
-                permissionDenied = true
-                cancelRecording()
-                return
-            }
-        default:
-            break
-        }
-        guard !stopped, recordingConversation != nil, !Task.isCancelled else {
-            cancelRecording()
-            return
+            return false
         }
         phase = .recording
+        recorder.onAutomaticStop = { [weak self] outcome in self?.handle(outcome, intent: intent) }
         do {
             try recorder.start(into: audioDirectory.appending(path: "\(UUID().uuidString.lowercased()).m4a"))
+            return true
         } catch {
             cancelRecording()
             notice = "L’enregistrement n’a pas pu démarrer."
+            return false
         }
     }
 
     func stopRecording() async {
-        guard phase == .recording, recorder.isRecording else { return }
+        if isPreparingRecording { cancelRecording(); return }
+        guard phase == .recording, recorder.isRecording, let intent = recordingIntent else { return }
+        phase = .finishing
         let outcome = await recorder.stop()
-        handle(outcome)
+        handle(outcome, intent: intent)
     }
 
     func cancelRecording() {
         recordingConversation = nil
+        recordingIntent = nil
+        isPreparingRecording = false
         recorder.cancel()
         phase = .idle
     }
 
     func appWillResignActive() async {
-        if phase == .recording {
-            if recorder.isRecording { await recorder.interrupt() } else { cancelRecording() }
-        } else if isWorking {
+        if isPreparingRecording {
+            cancelRecording()
+        } else if phase == .recording {
+            if recorder.isRecording {
+                phase = .finishing
+                await recorder.interrupt()
+            } else {
+                // Automatic stop may already be measuring the finalized asset's duration.
+                phase = .finishing
+            }
+        } else if phase != .finishing, isWorking {
             pause()
         }
     }
@@ -138,8 +186,8 @@ final class VoiceMessageStore {
         }
     }
 
-    private func handle(_ outcome: VoiceRecorder.Outcome) {
-        guard !stopped, let conversation = recordingConversation else {
+    private func handle(_ outcome: VoiceRecorder.Outcome, intent: UUID) {
+        guard !stopped, recordingIntent == intent, let conversation = recordingConversation else {
             // Cancel/logout can win while AVURLAsset is measuring an already-finalized recording.
             switch outcome {
             case .finished(let url, _), .interrupted(let url, _):
@@ -150,14 +198,18 @@ final class VoiceMessageStore {
             return
         }
         recordingConversation = nil
+        recordingIntent = nil
+        isPreparingRecording = false
         phase = .idle
         switch outcome {
         case .finished(let url, let durationMs):
-            keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: false)
-            _ = beginOperation(allowUpload: true)
+            if keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: false) {
+                notice = "Vocal prêt à envoyer."
+            }
         case .interrupted(let url, let durationMs):
-            keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: true)
-            notice = "Enregistrement interrompu."
+            if keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: true) {
+                notice = "Enregistrement interrompu."
+            }
         case .tooShortOrSilent:
             notice = "Aucun son détecté."
         case .failed:
@@ -165,7 +217,7 @@ final class VoiceMessageStore {
         }
     }
 
-    private func keep(url: URL, durationMs: Int, conversation: String, interrupted: Bool) {
+    private func keep(url: URL, durationMs: Int, conversation: String, interrupted: Bool) -> Bool {
         try? FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path(percentEncoded: false)
         )
@@ -175,9 +227,11 @@ final class VoiceMessageStore {
                 durationMs: durationMs, createdAt: Date(), state: interrupted ? .interrupted : .ready,
                 conversationId: conversation
             ))
+            return true
         } catch {
             try? FileManager.default.removeItem(at: url)
             notice = "Le message vocal n’a pas pu être conservé."
+            return false
         }
     }
 

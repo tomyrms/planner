@@ -81,8 +81,9 @@ final class VoiceRecorder {
     /// The app leaves the foreground: keep what was said, let the user choose later.
     func interrupt() async {
         guard isRecording else { return }
+        let completion = onAutomaticStop
         let outcome = await finish(interrupted: true)
-        onAutomaticStop?(outcome)
+        completion?(outcome)
     }
 
     private func finish(interrupted: Bool) async -> Outcome {
@@ -117,9 +118,11 @@ final class VoiceRecorder {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self, let recorder = self.recorder else { return }
                 if !recorder.isRecording {
-                    // The 2-minute limit stopped the recorder.
-                    let outcome = await self.finish(interrupted: false)
-                    self.onAutomaticStop?(outcome)
+                    // Retain this recording's callback across the asynchronous duration read.
+                    let completion = self.onAutomaticStop
+                    // A route/interruption may stop it too; only the elapsed limit is a normal stop.
+                    let outcome = await self.finish(interrupted: self.elapsed < Self.maxDuration - 0.5)
+                    completion?(outcome)
                     return
                 }
                 recorder.updateMeters()

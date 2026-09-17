@@ -1,31 +1,27 @@
 import SwiftUI
 import UIKit
 
-/// Microphone of the composer: one tap starts a recording (hold-to-talk is LATER).
+/// Accessible alternative to the global hold gesture: tap, then explicit Stop and Send.
 struct VoiceButton: View {
     @Environment(AppServices.self) private var services
+    @State private var startTask: Task<Void, Never>?
 
     private var voice: VoiceMessageStore { services.voice }
 
     var body: some View {
-        @Bindable var voice = services.voice
         Button {
-            Task { await voice.startRecording() }
+            startTask = Task { _ = await voice.startRecording() }
         } label: {
             Image(systemName: "mic")
                 .font(.title2)
                 .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
         }
-        .disabled(voice.phase != .idle || voice.draft != nil || !services.assistant.canAcceptVoice)
+        .disabled(voice.phase != .idle || voice.isPreparingRecording || voice.draft != nil || !services.assistant.canAcceptVoice)
         .accessibilityLabel("Enregistrer un message vocal")
         .sensoryFeedback(.impact(weight: .light), trigger: voice.phase == .recording)
-        .alert("Micro non autorisé", isPresented: $voice.permissionDenied) {
-            Button("Ouvrir Réglages") {
-                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            }
-            Button("Plus tard", role: .cancel) {}
-        } message: {
-            Text("Le micro sert uniquement à enregistrer les messages vocaux envoyés à l’assistant. Le texte reste toujours disponible.")
+        .onDisappear {
+            startTask?.cancel()
+            if voice.isPreparingRecording { voice.cancelRecording() }
         }
     }
 }
@@ -48,7 +44,7 @@ struct VoiceRecorderBar: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Waveform(levels: voice.recorder.levels)
+            VoiceInputLevel(levels: voice.recorder.levels)
                 .frame(height: 24)
                 .accessibilityHidden(true)
             Button("Annuler", role: .cancel) { voice.cancelRecording() }
@@ -67,19 +63,22 @@ struct VoiceRecorderBar: View {
     }
 }
 
-private struct Waveform: View {
+struct VoiceInputLevel: View {
     let levels: [Float]
 
     var body: some View {
         GeometryReader { geometry in
+            let visibleCount = max(1, Int((max(0, geometry.size.width) + 2) / 4))
+            let visibleLevels = Array(levels.suffix(visibleCount))
             HStack(alignment: .center, spacing: 2) {
-                ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                ForEach(Array(visibleLevels.enumerated()), id: \.offset) { _, level in
                     Capsule()
                         .fill(Color.secondary)
                         .frame(width: 2, height: max(2, geometry.size.height * CGFloat(level)))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .clipped()
         }
     }
 }
@@ -110,6 +109,9 @@ struct VoiceDraftBar: View {
                     case .delivering:
                         ProgressView()
                         Text("Envoi du texte…").font(.footnote)
+                    case .finishing:
+                        ProgressView()
+                        Text("Finalisation…").font(.footnote)
                     default:
                         if draft.state != .failed || voice.canRetry {
                             Button(draft.transcript != nil ? "Envoyer le texte" : draft.state == .pending ? "Vérifier le résultat" : draft.state == .failed ? "Réessayer" : "Envoyer") {

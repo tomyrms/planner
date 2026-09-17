@@ -1,24 +1,36 @@
 import SwiftUI
 
-/// Four destinations (02_Design/05_Calendar_Task_UX.md); adding is a toolbar action, never a tab.
+/// Four native destinations; quick capture is a tab accessory action, never a fifth destination.
 struct MainTabView: View {
     @Environment(AppServices.self) private var services
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selection = Destination.today
+    @State private var addingTask = false
+    @State private var navigationTask: Task<Void, Never>?
+
+    private enum Destination: Hashable { case today, calendar, assistant, lists }
 
     var body: some View {
         @Bindable var navigator = services.navigator
-        TabView {
-            Tab("Aujourd’hui", systemImage: "sun.max") {
+        TabView(selection: Binding(get: { selection }, set: select)) {
+            Tab("Aujourd’hui", systemImage: "sun.max", value: Destination.today) {
                 TodayView()
             }
-            Tab("Calendrier", systemImage: "calendar") {
+            Tab("Calendrier", systemImage: "calendar", value: Destination.calendar) {
                 CalendarView()
             }
-            Tab("Assistant", systemImage: "text.bubble") {
+            Tab("Assistant", systemImage: "text.bubble", value: Destination.assistant) {
                 AssistantView()
             }
-            Tab("Listes", systemImage: "list.bullet") {
+            Tab("Listes", systemImage: "list.bullet", value: Destination.lists) {
                 ListsView()
             }
+        }
+        .tabViewBottomAccessory {
+            QuickCaptureAccessory(
+                onAddTask: { addingTask = true },
+                onOpenAssistant: { selection = .assistant }
+            )
         }
         .overlay(alignment: .bottom) {
             if let offer = services.undo.current {
@@ -32,9 +44,28 @@ struct MainTabView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.22), value: services.undo.current?.id)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: services.undo.current?.id)
+        .sheet(isPresented: $addingTask) {
+            TaskEditorView(mode: .create(projectId: nil, schedule: nil))
+        }
         .sheet(item: $navigator.target) { target in
             OpenTargetView(target: target)
+        }
+        .onDisappear { navigationTask?.cancel() }
+    }
+
+    private func select(_ destination: Destination) {
+        guard destination != selection else { return }
+        navigationTask?.cancel()
+        if services.voice.phase == .recording || services.voice.phase == .finishing || services.voice.isPreparingRecording {
+            navigationTask = Task {
+                await services.voice.appWillResignActive()
+                guard !Task.isCancelled else { return }
+                selection = destination
+                navigationTask = nil
+            }
+        } else {
+            selection = destination
         }
     }
 }
