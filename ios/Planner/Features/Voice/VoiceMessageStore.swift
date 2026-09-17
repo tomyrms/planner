@@ -64,10 +64,12 @@ final class VoiceMessageStore {
     @ObservationIgnored private var recordingConversation: String?
     @ObservationIgnored private var recordingIntent: UUID?
     @ObservationIgnored private var stopped = false
+    @ObservationIgnored private var recoverySuspended = false
 
     init(
         api: any VoiceTranscriptionAPI, assistant: any VoiceAssistant,
         defaults: UserDefaults = .standard, audioDirectory: URL? = nil,
+        suspended: Bool = false,
         pollingTimeout: Duration = .seconds(75), pollingInterval: Duration = .seconds(2),
         recorder: (any VoiceRecording)? = nil,
         requestRecordingPermission: @escaping @MainActor () async -> Bool = {
@@ -81,6 +83,7 @@ final class VoiceMessageStore {
         self.api = api
         self.assistant = assistant
         self.defaults = defaults
+        self.recoverySuspended = suspended
         self.audioDirectory = audioDirectory ?? (try? Self.directory())
             ?? URL.temporaryDirectory.appending(path: "PendingAudio", directoryHint: .isDirectory)
         self.pollingTimeout = pollingTimeout
@@ -106,7 +109,7 @@ final class VoiceMessageStore {
 
     @discardableResult
     func startRecording() async -> Bool {
-        guard !stopped, !Task.isCancelled, phase == .idle, recordingIntent == nil else { return false }
+        guard !stopped, !recoverySuspended, !Task.isCancelled, phase == .idle, recordingIntent == nil else { return false }
         guard draft == nil else {
             notice = "Un vocal est déjà conservé. Envoyez-le ou supprimez-le avant d’enregistrer."
             return false
@@ -179,7 +182,7 @@ final class VoiceMessageStore {
 
     /// Only reads on recovery: a failed transcription never causes another paid attempt by itself.
     func appDidBecomeActive() async {
-        guard !stopped, !expireIfNeeded(), let current = draft else { return }
+        guard !stopped, !recoverySuspended, !expireIfNeeded(), let current = draft else { return }
         recoverPreviouslyMissingAudio()
         if current.state == .pending || current.transcript != nil || current.handoff != nil {
             await verify()
@@ -246,7 +249,7 @@ final class VoiceMessageStore {
     }
 
     private func beginOperation(allowUpload: Bool) -> Task<Void, Never>? {
-        guard !stopped, phase == .idle, operation == nil, draft != nil, !expireIfNeeded() else { return nil }
+        guard !stopped, !recoverySuspended, phase == .idle, operation == nil, draft != nil, !expireIfNeeded() else { return nil }
         let id = UUID()
         operationId = id
         notice = nil
@@ -394,6 +397,31 @@ final class VoiceMessageStore {
         clearDraft()
     }
 
+    /// Recovery freezes requests but must archive a recording that has already been captured.
+    /// Let AVURLAsset finish before marking the store stopped, otherwise its callback deletes the file.
+    func suspendPreservingDraft() async throws {
+        recoverySuspended = true
+        if stopped { return }
+        if phase != .recording && phase != .finishing { pause() }
+        await appWillResignActive()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(15))
+        while phase == .finishing {
+            guard clock.now < deadline else { throw RecoveryError.recordingStillFinishing }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        stopped = true
+        for task in abandonments.values { task.cancel() }
+        abandonments.removeAll()
+        // The expiry task remains local: it may delete expired audio, never send another request.
+    }
+
+    /// Used only by freshly constructed services after the recovery journal has been completed.
+    func activateRequests() {
+        guard !stopped else { return }
+        recoverySuspended = false
+    }
+
     func discard() {
         pause()
         notice = nil
@@ -410,6 +438,7 @@ final class VoiceMessageStore {
     }
 
     private func abandon(_ transcriptionId: String) {
+        guard !stopped, !recoverySuspended else { return }
         let id = UUID()
         let api = self.api
         abandonments[id] = Task { [weak self] in

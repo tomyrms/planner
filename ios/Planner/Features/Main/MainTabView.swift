@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// Four native destinations; quick capture is a tab accessory action, never a fifth destination.
+/// Four native tab destinations with a central capture action between Calendar and Assistant.
 struct MainTabView: View {
     @Environment(AppServices.self) private var services
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var selection = Destination.today
     @State private var addingTask = false
     @State private var navigationTask: Task<Void, Never>?
+    @State private var keyboardVisible = false
+    @State private var barWidth: CGFloat = 320
 
     private nonisolated enum Destination: Hashable { case today, calendar, assistant, lists }
 
@@ -15,22 +19,23 @@ struct MainTabView: View {
         TabView(selection: Binding(get: { selection }, set: { destination in select(destination) })) {
             Tab("Aujourd’hui", systemImage: "sun.max", value: Destination.today) {
                 TodayView()
+                    .toolbarVisibility(.hidden, for: .tabBar)
             }
             Tab("Calendrier", systemImage: "calendar", value: Destination.calendar) {
                 CalendarView()
+                    .toolbarVisibility(.hidden, for: .tabBar)
             }
             Tab("Assistant", systemImage: "text.bubble", value: Destination.assistant) {
                 AssistantView()
+                    .toolbarVisibility(.hidden, for: .tabBar)
             }
             Tab("Listes", systemImage: "list.bullet", value: Destination.lists) {
                 ListsView()
+                    .toolbarVisibility(.hidden, for: .tabBar)
             }
         }
-        .tabViewBottomAccessory {
-            QuickCaptureAccessory(
-                onAddTask: { addingTask = true },
-                onOpenAssistant: { selection = .assistant }
-            )
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !keyboardVisible { bottomBar }
         }
         .overlay(alignment: .bottom) {
             if let offer = services.undo.current {
@@ -40,7 +45,7 @@ struct MainTabView: View {
                     services.undo.dismiss()
                 }
                 .padding(.horizontal, Spacing.lg)
-                .padding(.bottom, 64)
+                .padding(.bottom, keyboardVisible ? 8 : 94)
                 .transition(.opacity)
             }
         }
@@ -52,6 +57,59 @@ struct MainTabView: View {
             OpenTargetView(target: target)
         }
         .onDisappear { navigationTask?.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
+    }
+
+    private var bottomBar: some View {
+        HStack(alignment: .center, spacing: 0) {
+            destination(.today, title: "Aujourd’hui", symbol: "sun.max")
+            destination(.calendar, title: "Calendrier", symbol: "calendar")
+            QuickCaptureAccessory(panelWidth: max(240, barWidth - 16),
+                                  onAddTask: { addingTask = true },
+                                  onOpenAssistant: { selection = .assistant })
+                .frame(width: 64)
+                .offset(y: -10)
+                .zIndex(1)
+            destination(.assistant, title: "Assistant", symbol: "text.bubble")
+            destination(.lists, title: "Listes", symbol: "list.bullet")
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 6)
+        .background {
+            if reduceTransparency {
+                Capsule().fill(Color(uiColor: .secondarySystemBackground))
+            } else {
+                Capsule().fill(.clear).glassEffect(.regular, in: .capsule)
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barWidth = $0 }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Navigation principale")
+    }
+
+    private func destination(_ value: Destination, title: String, symbol: String) -> some View {
+        let selected = selection == value
+        return Button { select(value) } label: {
+            VStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(.system(size: typeSize.isAccessibilitySize ? 24 : 21, weight: selected ? .semibold : .regular))
+                if !typeSize.isAccessibilitySize {
+                    Text(title).font(.caption2).lineLimit(1)
+                }
+            }
+            .foregroundStyle(selected ? Color.accentColor : Color.primary)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(selected ? Color.accentColor.opacity(0.12) : Color.clear, in: Capsule())
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityHint("Onglet")
     }
 
     private func select(_ destination: Destination) {

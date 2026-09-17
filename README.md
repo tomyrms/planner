@@ -95,6 +95,22 @@ docker compose --profile app up -d --wait
 
 `restore` garde l'ancienne base sous `planner_before_restore_…`, réinitialise PowerSync, crée une nouvelle génération et révoque tous les appareils (sauf `--keep-devices`) : réappairer ensuite. Procédure complète : `04_Backend/05_Homelab_Deployment.md`. Les fichiers de `backups/` contiennent des données personnelles et des empreintes de mots de passe : ne pas les partager, copie chiffrée hors machine.
 
+### Sauvegarde quotidienne sur Windows
+
+```powershell
+.\scripts\backup-daily.ps1                     # crée puis vérifie exactement le nouveau dump
+.\scripts\register-maintenance.ps1 -WhatIf     # aperçu ; ne crée aucune tâche
+.\scripts\register-maintenance.ps1             # installation explicite, 03:15 et ouverture de session
+```
+
+La tâche `Planner Daily Backup` utilise le compte courant sans mot de passe enregistré ni élévation. Elle reprend une échéance manquée, réessaie trois fois à 15 minutes d'intervalle après échec et refuse les exécutions simultanées. Elle nécessite une session Windows ouverte et Docker Desktop déjà lancé ; elle ne démarre pas Docker. Sur une machine éteinte ou déconnectée, une planification ne garantit pas une sauvegarde sous 24 h.
+
+Le job utilise `npm-local.ps1`, conserve la rétention existante (7 dumps récents + 4 semaines), puis restaure le fichier qu'il vient de produire dans une base temporaire. Il ne lance jamais `backup restore` sur la base principale. Si plusieurs dumps apparaissent pendant sa création, il échoue explicitement au lieu d'en choisir un au hasard. `-Destination <dossier>` change uniquement le dossier des sauvegardes locales, sur les deux scripts ; `-At HH:mm` change l'horaire de la tâche. Ces scripts n'effectuent aucune copie ni aucun chiffrement hors machine.
+
+Statut et dernier journal : `.local/maintenance/backup-daily/state.json` et `last-run.log`, réservés au compte courant, au système et aux administrateurs. Ils contiennent seulement dates, étape, résultat, nom technique et taille du dump, jamais les sorties des outils ni des secrets. Codes d'échec : 11 Docker/PostgreSQL indisponible, 12 création, 13 nouveau fichier ambigu/incomplet, 14 vérification, 15 configuration ou statut local. Une création/vérification réussie alimente aussi `maintenance_runs`, visible dans les diagnostics de l'app ; un échec avant accès à PostgreSQL reste signalé par le statut local et le Planificateur de tâches.
+
+La copie chiffrée hors machine nécessite encore une destination choisie, un moyen de déchiffrement conservé séparément et un essai de récupération depuis cette copie. Les secrets du serveur restent dans un coffre distinct. La vérification temporaire prouve le dump ; elle ne remplace pas un exercice complet sur un serveur vierge avec l'iPhone plus récent que la sauvegarde.
+
 ## Partager le projet pour une revue
 
 Ne pas zipper le dossier : il contient `.env`, `.local/`, `backups/` et les dépendances. Utiliser :

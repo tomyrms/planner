@@ -7,6 +7,8 @@ nonisolated struct StoredSession: Codable, Equatable, Sendable {
     var apiBaseURL: URL
     var deviceId: String
     var refreshToken: String
+    /// Absent in older installations until their existing refresh session proves its owner.
+    var userId: String? = nil
 }
 
 nonisolated struct KeychainError: Error, Equatable {
@@ -16,7 +18,9 @@ nonisolated struct KeychainError: Error, Equatable {
 /// One Keychain item, readable after the first unlock (background sync) and never migrated to another device.
 nonisolated struct CredentialStore: Sendable {
     private let service = "planner.session"
-    private let account = "device"
+    private let account: String
+
+    init(account: String = "device") { self.account = account }
 
     func load() throws -> StoredSession? {
         var query = baseQuery

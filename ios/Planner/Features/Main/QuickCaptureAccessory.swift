@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Compact action in the native tab accessory. Gesture handling never submits a vocal.
+/// Raised central action. Only an active gesture reveals its instructions; it never submits audio.
 struct QuickCaptureAccessory: View {
     @Environment(AppServices.self) private var services
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -11,6 +11,7 @@ struct QuickCaptureAccessory: View {
     @State private var finishTask: Task<Void, Never>?
     @State private var feedbackTask: Task<Void, Never>?
     @State private var captureId: UUID?
+    var panelWidth: CGFloat = 300
     let onAddTask: () -> Void
     let onOpenAssistant: () -> Void
 
@@ -20,58 +21,12 @@ struct QuickCaptureAccessory: View {
 
     var body: some View {
         @Bindable var voice = services.voice
-        HStack(spacing: Spacing.md) {
-            VStack(alignment: .leading, spacing: 3) {
-                if gesture.stage == .cancelled {
-                    Label("Vocal annulé", systemImage: "xmark")
-                        .font(.subheadline)
-                } else if capturing || finishing {
-                    HStack(spacing: Spacing.sm) {
-                        Image(systemName: gesture.stage == .locked ? "lock.fill" : "record.circle")
-                            .foregroundStyle(voice.recorder.isRecording ? Color.red : Color.secondary)
-                        Text(voice.isPreparingRecording ? "Autorisation du micro…" : finishing ? "Finalisation…" : "Enregistrement · \(VoiceRecorderBar.clock(voice.recorder.elapsed))")
-                            .font(.subheadline.monospacedDigit())
-                        VoiceInputLevel(levels: voice.recorder.levels)
-                            .frame(width: 42, height: 18)
-                            .accessibilityHidden(true)
-                    }
-                    if gesture.stage == .locked {
-                        HStack {
-                            Button("Annuler", role: .cancel) { cancel() }
-                                .frame(minHeight: 44)
-                            Button("Arrêter") { finish(interrupted: false) }
-                                .frame(minHeight: 44)
-                        }
-                    } else if finishing {
-                        Text("Préparation du brouillon…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("← Annuler · ↑ Verrouiller")
-                            .font(.caption)
-                            .foregroundStyle(gesture.cancelProgress > 0 ? Color.orange : Color.secondary)
-                    }
-                } else if voice.phase == .recording {
-                    Button("Enregistrement en cours · ouvrir l’Assistant", action: onOpenAssistant)
-                        .font(.subheadline)
-                } else if voice.draft != nil {
-                    Button("Vocal conservé · ouvrir l’Assistant", action: onOpenAssistant)
-                        .font(.subheadline)
-                } else {
-                    Text("Ajouter une tâche")
-                        .font(.subheadline)
-                    Text("Maintenir + pour dicter")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Keep the touch view at the same structural position for the whole gesture.
+        // Keep the touch view at the same structural position for the whole gesture.
             ZStack {
-                Circle().fill(Color.accentColor)
+                Circle().fill(Color.accentColor.gradient)
+                    .shadow(color: Color.accentColor.opacity(0.22), radius: 5, y: 3)
                 Image(systemName: capturing || finishing ? (gesture.stage == .locked ? "lock.fill" : "mic.fill") : "plus")
-                    .font(.title3.weight(.semibold))
+                    .font(.title2.weight(.semibold))
                     .foregroundStyle(.white)
                     .offset(
                         x: reduceMotion ? 0 : CGFloat(-gesture.cancelProgress * 5),
@@ -98,10 +53,15 @@ struct QuickCaptureAccessory: View {
                     onAccessibleRecord: { begin(locked: true) }
                 )
             }
-            .frame(width: 44, height: 44)
+            .frame(width: 52, height: 52)
+        .overlay(alignment: .bottom) {
+            if capturing || finishing || gesture.stage == .cancelled {
+                capturePanel
+                    .frame(width: panelWidth)
+                    .padding(.bottom, 68)
+                    .transition(.opacity)
+            }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.xs)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: gesture.stage)
         .sensoryFeedback(.impact(weight: .light), trigger: voice.recorder.isRecording)
         .sensoryFeedback(.impact(weight: .medium), trigger: gesture.stage == .locked)
@@ -128,6 +88,48 @@ struct QuickCaptureAccessory: View {
         } message: {
             Text("Le micro sert uniquement aux messages vocaux envoyés à l’assistant. Le texte reste disponible.")
         }
+    }
+
+    private var capturePanel: some View {
+        VStack(spacing: Spacing.sm) {
+            if gesture.stage == .cancelled {
+                Label("Vocal annulé", systemImage: "xmark")
+            } else {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: gesture.stage == .locked ? "lock.fill" : "record.circle")
+                        .foregroundStyle(voice.recorder.isRecording ? Color.red : Color.secondary)
+                    Text(voice.isPreparingRecording ? "Micro…" : finishing ? "Finalisation…" : VoiceRecorderBar.clock(voice.recorder.elapsed))
+                        .monospacedDigit()
+                    VoiceInputLevel(levels: voice.recorder.levels)
+                        .frame(width: 42, height: 18)
+                        .accessibilityHidden(true)
+                }
+                if gesture.stage == .locked {
+                    HStack(spacing: Spacing.xl) {
+                        Button("Annuler", role: .cancel) { cancel() }.frame(minHeight: 44)
+                        Button("Arrêter", systemImage: "stop.fill") { finish(interrupted: false) }.frame(minHeight: 44)
+                    }
+                } else if !finishing {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Spacing.xl) { gestureHints }
+                        VStack(spacing: Spacing.sm) { gestureHints }
+                    }
+                    .font(.caption)
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding(Spacing.md)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private var gestureHints: some View {
+        Label("Annuler", systemImage: "arrow.left")
+            .foregroundStyle(gesture.cancelProgress > 0 ? Color.orange : Color.secondary)
+        Label("Verrouiller", systemImage: "arrow.up")
+            .foregroundStyle(gesture.lockProgress > 0 ? Color.accentColor : Color.secondary)
     }
 
     private func begin(locked: Bool) {

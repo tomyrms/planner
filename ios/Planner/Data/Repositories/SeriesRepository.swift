@@ -184,14 +184,10 @@ nonisolated extension TaskRepository {
     // MARK: - Series
 
     /// "Toute la série": rule and task template in one `series.update` (revision precondition required).
-    func updateSeries(_ task: TaskItem, from base: TaskDraft, to draft: TaskDraft) async throws {
-        var set: [String: JSONPayload] = [:]
-        if draft.trimmedTitle != base.trimmedTitle { set["title"] = .string(draft.trimmedTitle) }
-        if draft.notes != base.notes { set["notes"] = draft.notes.isEmpty ? .null : .string(draft.notes) }
-        if draft.priority != base.priority { set["priority"] = .string(draft.priority.rawValue) }
-        if draft.projectId != base.projectId { set["projectId"] = draft.projectId.map { JSONPayload.string($0) } ?? .null }
-        if draft.durationMinutes != base.durationMinutes { set["durationMinutes"] = draft.durationMinutes.map { JSONPayload.int($0) } ?? .null }
-        if draft.schedule != base.schedule, let schedule = draft.schedule { set["schedule"] = schedule.payload }
+    func updateSeries(_ task: TaskItem, from base: TaskDraft, to draft: TaskDraft, reapplying fields: Set<String> = []) async throws {
+        var set = Self.patch(from: base, to: draft, reapplying: fields)
+        set.removeValue(forKey: "deadline") // Series have no deadline and cannot clear their anchor.
+        if draft.schedule == nil { set.removeValue(forKey: "schedule") }
         var payload: [String: JSONPayload] = [:]
         if !set.isEmpty { payload["set"] = .object(set) }
         if draft.recurrence != base.recurrence, let recurrence = draft.recurrence { payload["recurrence"] = recurrence.payload }

@@ -9,11 +9,12 @@ final class SyncController {
     let db: any PowerSyncDatabaseProtocol
     private let connector: SyncConnector
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    @ObservationIgnored private var disconnection: Task<Void, Never>?
 
     init(db: any PowerSyncDatabaseProtocol, api: APIClient) {
         self.db = db
         let (stream, continuation) = AsyncStream.makeStream(of: SyncBlock?.self)
-        connector = SyncConnector(api: api, events: continuation)
+        connector = SyncConnector(api: api, database: db, events: continuation)
         listeners.append(Task { [weak self] in
             for await block in stream {
                 self?.apply(block)
@@ -34,25 +35,60 @@ final class SyncController {
     }
 
     func start() async {
+        await connector.installOnlineActionGuard()
         watchServerGeneration()
         do {
+            if let saved = try await LocalMeta.recoveryBlock(in: db) {
+                apply(saved)
+                return
+            }
             try await db.connect(connector: connector, crudThrottle: 1, retryDelay: 5)
         } catch {
             apply(.actionRequired(status: 0, code: "CONNECT_FAILED"))
         }
     }
 
+    /// A connect() return does not prove that asynchronous credential validation has finished.
+    func validateBeforeOnlineActions() async -> Bool {
+        do {
+            try await connector.verifyOnlineIdentity()
+            return true
+        } catch let error as SyncBlockedError {
+            apply(error.block)
+            return false
+        } catch { return false }
+    }
+
     func stop() async {
         for listener in listeners { listener.cancel() }
         listeners.removeAll()
+        disconnection?.cancel()
+        disconnection = nil
         try? await db.disconnect()
+    }
+
+    /// Recovery first suspends uploads and replication, without clearing any local rows.
+    func suspendForRecovery() async throws {
+        let reason: SyncBlock = block ?? .pairingRequired
+        try await connector.requireRecovery(reason)
+        block = reason
+        for listener in listeners { listener.cancel() }
+        listeners.removeAll()
+        await disconnection?.value
+        disconnection = nil
+        try await db.disconnect()
     }
 
     /// "Réessayer" in Settings: uploads resume and the engine reconnects. The SDK keeps showing
     /// "connecting" after a disconnect, so the reconnection never depends on that state.
     func retry() async {
-        await connector.clearBlock()
         do {
+            if let saved = try await LocalMeta.recoveryBlock(in: db) {
+                apply(saved)
+                return
+            }
+            await disconnection?.value
+            await connector.clearBlock()
             try await db.connect(connector: connector, crudThrottle: 1, retryDelay: 5)
         } catch {
             apply(.actionRequired(status: 0, code: "CONNECT_FAILED"))
@@ -76,7 +112,8 @@ final class SyncController {
         case .generationChanged, .pairingRequired, .updateRequired, .serverMisconfigured:
             // Nothing is downloaded or sent until the user chooses; the queue and local data stay.
             let db = self.db
-            Task { try? await db.disconnect() }
+            disconnection?.cancel()
+            disconnection = Task { try? await db.disconnect() }
         case .actionRequired:
             break
         }
@@ -94,7 +131,8 @@ final class SyncController {
                     guard let current = generations.first,
                           let seen = try await LocalMeta.serverGeneration(in: db),
                           current.caseInsensitiveCompare(seen) != .orderedSame else { continue }
-                    self?.apply(.generationChanged(current))
+                    guard let self else { return }
+                    try await self.connector.requireRecovery(.generationChanged(current))
                 }
             } catch {
                 // The watch ends with the engine; a new start installs it again.

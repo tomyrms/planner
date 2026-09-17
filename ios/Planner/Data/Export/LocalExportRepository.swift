@@ -166,7 +166,9 @@ nonisolated struct LocalExportRepository: Sendable {
         """
     private static let rejectionsSQL = """
         SELECT json_object('id', id, 'commandType', command_type, 'aggregateId', aggregate_id,
-          'code', code, 'message', message, 'rejectedAt', rejected_at)
+          'code', code, 'message', message, 'rejectedAt', rejected_at,
+          'command', CASE WHEN json_valid(command_json) THEN json(command_json) ELSE NULL END,
+          'storedCommand', command_json)
         FROM sync_rejections ORDER BY rejected_at, id
         """
 }

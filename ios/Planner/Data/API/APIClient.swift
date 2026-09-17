@@ -17,6 +17,7 @@ nonisolated struct DeviceDescription: Encodable, Sendable {
 }
 
 nonisolated struct TokenResponse: Decodable, Sendable {
+    let userId: String
     let deviceId: String
     let accessToken: String
     let accessTokenExpiresAt: String
@@ -28,6 +29,8 @@ nonisolated struct SyncTokenResponse: Decodable, Sendable {
     let token: String
     let expiresAt: String
     let endpoint: String?
+    let userId: String
+    let serverGeneration: String
 }
 
 nonisolated struct MutationOutcome: Decodable, Sendable {
@@ -84,13 +87,17 @@ actor APIClient {
     private var session: StoredSession?
     private var accessToken: (value: String, expiresAt: Date)?
     private var refreshing: Task<TokenResponse, any Error>?
+    private var retired = false
+    private let requireIdentityValidation: Bool
+    private var onlineActionValidator: (@Sendable () async throws -> Void)?
 
-    init(session: StoredSession, clientVersion: String, credentials: CredentialStore) {
+    init(session: StoredSession, clientVersion: String, credentials: CredentialStore, urlSession: URLSession? = nil, requireIdentityValidation: Bool = false) {
         self.baseURL = session.apiBaseURL
         self.session = session
         self.clientVersion = clientVersion
         self.credentials = credentials
-        self.urlSession = Self.makeURLSession()
+        self.urlSession = urlSession ?? Self.makeURLSession()
+        self.requireIdentityValidation = requireIdentityValidation
     }
 
     /// `POST /auth/pair/complete` with the one-time secret shown by the homelab console.
@@ -107,7 +114,28 @@ actor APIClient {
 
     /// Keeps the tokens of a fresh pairing, so that the first sync does not refresh at once.
     func adopt(_ tokens: TokenResponse) {
+        guard !retired else { return }
         accessToken = (tokens.accessToken, Timestamp.parse(tokens.accessTokenExpiresAt) ?? Date())
+    }
+
+    /// Called before replacing pairing credentials. A late refresh can no longer overwrite them.
+    func retire() {
+        retired = true
+        refreshing?.cancel()
+        refreshing = nil
+        accessToken = nil
+        session = nil
+        onlineActionValidator = nil
+        urlSession.invalidateAndCancel()
+    }
+
+    /// An old device can establish its owner through its own valid refresh credentials.
+    /// A newly paired device cannot use this to relabel an existing database.
+    func establishedUserId() -> String? { session?.userId }
+
+    func setOnlineActionValidator(_ validator: @escaping @Sendable () async throws -> Void) {
+        guard !retired else { return }
+        onlineActionValidator = validator
     }
 
     func syncToken() async throws -> SyncTokenResponse {
@@ -153,10 +181,16 @@ actor APIClient {
 
     func authorized(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json", timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         for attempt in 0..<2 {
+            guard !retired else { throw APIError.unauthorized(code: "SESSION_REPLACED") }
             try Task.checkCancellation()
+            if requireIdentityValidation, method != "GET", path.hasPrefix("api/v1/assistant/") {
+                guard let onlineActionValidator else { throw APIError.transport(.notConnectedToInternet) }
+                try await onlineActionValidator()
+            }
             let token = try await validAccessToken(forceRefresh: attempt > 0)
             // Token refresh is shared by callers; cancelling one caller must still prevent its upload.
             try Task.checkCancellation()
+            guard !retired else { throw APIError.unauthorized(code: "SESSION_REPLACED") }
             var request = URLRequest(url: baseURL.appending(path: path))
             request.httpMethod = method
             request.timeoutInterval = timeout
@@ -167,6 +201,7 @@ actor APIClient {
                 request.httpBody = body
             }
             let (data, response) = try await Self.send(request, with: urlSession)
+            guard !retired else { throw APIError.unauthorized(code: "SESSION_REPLACED") }
             // An access token revoked or expired early: one refresh, then give up.
             if response.statusCode == 401 && attempt == 0 { continue }
             return (data, response)
@@ -202,9 +237,16 @@ actor APIClient {
             throw Self.failure(data, response)
         }
         let tokens = try Self.decode(TokenResponse.self, from: data)
+        try Task.checkCancellation()
+        guard !retired, session == current else { throw APIError.unauthorized(code: "SESSION_REPLACED") }
+        guard tokens.deviceId.caseInsensitiveCompare(current.deviceId) == .orderedSame,
+              current.userId.map({ $0.caseInsensitiveCompare(tokens.userId) == .orderedSame }) ?? true else {
+            throw APIError.unauthorized(code: "IDENTITY_CHANGED")
+        }
         // Stored before use: a lost write would still be covered by the server's one-minute replay window.
         var next = current
         next.refreshToken = tokens.refreshToken
+        next.userId = tokens.userId
         try credentials.save(next)
         session = next
         adopt(tokens)

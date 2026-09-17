@@ -8,7 +8,7 @@ Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'env
 
 ## Capture rapide
 
-Le petit **+** près de la barre d'onglets ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Après verrouillage, retirez le doigt puis utilisez Arrêter ou Annuler. Un relâchement sans verrouillage arrête aussi l'enregistrement.
+Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** dans la barre du bas, ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Les indications apparaissent pendant la capture. Après verrouillage, retirez le doigt puis utilisez Arrêter ou Annuler. Un relâchement sans verrouillage arrête aussi l'enregistrement.
 
 L'arrêt conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
 

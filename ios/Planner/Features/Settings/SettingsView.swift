@@ -16,8 +16,12 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 syncSection
+                SyncRecoverySection()
                 if !rejections.isEmpty { rejectionsSection }
                 LocalExportSection()
+                Section {
+                    NavigationLink("Diagnostics", systemImage: "stethoscope") { DiagnosticsView() }
+                }
                 deviceSection
                 aboutSection
             }
@@ -71,23 +75,21 @@ struct SettingsView: View {
     private var rejectionsSection: some View {
         Section {
             ForEach(rejections) { rejection in
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text(RejectionText.title(for: rejection))
-                    Text(RejectionText.reason(for: rejection.code))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .swipeActions {
-                    Button("Ignorer") { dismissRejection(rejection) }
-                }
-                .contextMenu {
-                    Button("Ignorer", systemImage: "xmark") { dismissRejection(rejection) }
+                NavigationLink {
+                    SyncRejectionDetailView(rejection: rejection)
+                } label: {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        Text(RejectionText.title(for: rejection))
+                        Text(RejectionText.reason(for: rejection.code))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         } header: {
             Text("À vérifier")
         } footer: {
-            Text("Ces modifications n’ont pas été acceptées par le serveur. Refaites-les si besoin, puis ignorez-les.")
+            Text("Ouvrez une modification pour consulter ce qui a été refusé, puis la corriger ou l’ignorer.")
         }
     }
 
@@ -179,11 +181,6 @@ struct SettingsView: View {
                 rejections = rows
             }
         } catch {}
-    }
-
-    private func dismissRejection(_ rejection: SyncQueueRepository.Rejection) {
-        let queue = services.queue
-        Task { try? await queue.dismiss(rejection) }
     }
 
     private func unpair() {

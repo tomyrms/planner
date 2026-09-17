@@ -63,6 +63,7 @@ nonisolated enum LocalDatabase {
         ], insertOnly: true),
         Table(name: "sync_rejections", columns: [
             .text("command_type"), .text("aggregate_id"), .text("code"), .text("message"), .text("rejected_at"),
+            .text("command_json"),
         ], localOnly: true),
         Table(name: "local_meta", columns: [.text("value")], localOnly: true),
         // Proof that iOS accepted a notification request before its time (ADR-018): never synchronized.
@@ -77,6 +78,43 @@ nonisolated enum LocalDatabase {
 /// Values kept on this iPhone only.
 nonisolated enum LocalMeta {
     static let serverGenerationKey = "server_generation"
+    static let ownerUserIdKey = "owner_user_id"
+    private static let recoveryBlockKey = "recovery_block"
+
+    static func ownerUserId(in db: any PowerSyncDatabaseProtocol) async throws -> String? {
+        try await db.getOptional(sql: "SELECT value FROM local_meta WHERE id = ?", parameters: [ownerUserIdKey]) {
+            try $0.getString(index: 0)
+        }
+    }
+
+    static func setOwnerUserId(_ value: String, in db: any PowerSyncDatabaseProtocol) async throws {
+        try await set(value, for: ownerUserIdKey, in: db)
+    }
+
+    static func recoveryBlock(in db: any PowerSyncDatabaseProtocol) async throws -> SyncBlock? {
+        let value = try await db.getOptional(sql: "SELECT value FROM local_meta WHERE id = ?", parameters: [recoveryBlockKey]) {
+            try $0.getString(index: 0)
+        }
+        guard let value else { return nil }
+        return try JSONDecoder().decode(SyncBlock.self, from: Data(value.utf8))
+    }
+
+    static func setRecoveryBlock(_ block: SyncBlock, in db: any PowerSyncDatabaseProtocol) async throws {
+        let value = String(decoding: try JSONEncoder().encode(block), as: UTF8.self)
+        try await set(value, for: recoveryBlockKey, in: db)
+    }
+
+    /// Only the recovery coordinator clears this after validating ownership and generation.
+    static func clearRecoveryBlock(in db: any PowerSyncDatabaseProtocol) async throws {
+        try await db.execute(sql: "DELETE FROM local_meta WHERE id = ?", parameters: [recoveryBlockKey])
+    }
+
+    private static func set(_ value: String, for key: String, in db: any PowerSyncDatabaseProtocol) async throws {
+        try await db.writeTransaction { tx in
+            try tx.execute(sql: "DELETE FROM local_meta WHERE id = ?", parameters: [key])
+            try tx.execute(sql: "INSERT INTO local_meta (id, value) VALUES (?, ?)", parameters: [key, value])
+        }
+    }
 
     static func serverGeneration(in db: any PowerSyncDatabaseProtocol) async throws -> String? {
         try await db.getOptional(

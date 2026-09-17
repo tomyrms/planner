@@ -7,9 +7,12 @@ struct TaskEditorView: View {
     enum Mode {
         case create(projectId: String?, schedule: TimeValue?)
         case edit(TaskItem)
+        case retryCreate(TaskDraft)
+        case retryPatch(TaskItem, base: TaskDraft, draft: TaskDraft, fields: Set<String>)
     }
 
     let mode: Mode
+    var onSaved: (() -> Void)? = nil
     @Environment(AppServices.self) private var services
     @Environment(\.dismiss) private var dismiss
     @State private var draft = TaskDraft()
@@ -26,6 +29,15 @@ struct TaskEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if isCorrection {
+                    Section {
+                        Text(isCreating
+                             ? "Vérifiez ces valeurs. Ajouter créera une nouvelle tâche, indépendante de la demande refusée."
+                             : "Vérifiez les valeurs refusées avant d’enregistrer une nouvelle correction. Les autres champs partent de la version présente sur cet iPhone.")
+                        Text("Le rejet initial reste conservé dans Réglages.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     TextField("Titre", text: $draft.title, axis: .vertical)
                         .focused($titleFocused)
@@ -79,9 +91,16 @@ struct TaskEditorView: View {
                 Section {
                     Picker("Liste", selection: $draft.projectId) {
                         Text("Inbox").tag(String?.none)
+                        if let id = draft.projectId, !services.directory.projects.contains(where: { $0.id == id }) {
+                            Text("Liste indisponible sur cet iPhone").tag(String?.some(id))
+                        }
                         ForEach(services.directory.projects) { project in
                             Text(project.name).tag(String?.some(project.id))
                         }
+                    }
+                    if requiresAvailableProject {
+                        Text("Choisissez Inbox ou une liste disponible avant d’enregistrer la correction.")
+                            .font(.footnote).foregroundStyle(.orange)
                     }
                     Picker("Priorité", selection: $draft.priority) {
                         ForEach(Priority.allCases) { priority in
@@ -89,7 +108,7 @@ struct TaskEditorView: View {
                         }
                     }
                 }
-                if case .edit(let task) = mode {
+                if let task = editedTask {
                     AssistantChangesSection(taskId: task.id)
                     Section {
                         if task.isRecurring && !task.isDeleted {
@@ -148,7 +167,9 @@ struct TaskEditorView: View {
         }
     }
 
-    private let durationChoices = [15, 30, 45, 60, 90, 120, 180]
+    private var durationChoices: [Int] {
+        Array(Set([15, 30, 45, 60, 90, 120, 180] + (draft.durationMinutes.map { [$0] } ?? []))).sorted()
+    }
 
     private var title: String {
         if isCreating { return "Nouvelle tâche" }
@@ -156,13 +177,29 @@ struct TaskEditorView: View {
     }
 
     private var isCreating: Bool {
-        if case .create = mode { return true }
-        return false
+        switch mode {
+        case .create, .retryCreate: true
+        case .edit, .retryPatch: false
+        }
     }
 
     private var editedTask: TaskItem? {
-        if case .edit(let task) = mode { return task }
-        return nil
+        switch mode {
+        case .edit(let task), .retryPatch(let task, _, _, _): task
+        case .create, .retryCreate: nil
+        }
+    }
+
+    private var isCorrection: Bool {
+        switch mode {
+        case .retryCreate, .retryPatch: true
+        case .create, .edit: false
+        }
+    }
+
+    private var reapplyingFields: Set<String> {
+        if case .retryPatch(_, _, _, let fields) = mode { return fields }
+        return []
     }
 
     private var editedTaskId: String? { editedTask?.id }
@@ -206,7 +243,12 @@ struct TaskEditorView: View {
     }
 
     private var canSave: Bool {
-        draft.isValid && draft.isValidSeries && reminderIsValid && !saving && (isCreating || hasChanges)
+        draft.isValid && draft.isValidSeries && reminderIsValid && !requiresAvailableProject && !saving && (isCreating || hasChanges || !reapplyingFields.isEmpty)
+    }
+
+    private var requiresAvailableProject: Bool {
+        guard isCorrection, isCreating || reapplyingFields.contains("projectId"), let id = draft.projectId else { return false }
+        return !services.directory.projects.contains(where: { $0.id == id })
     }
 
     /// The stored task no longer matches what the draft started from (change or deletion elsewhere).
@@ -239,6 +281,13 @@ struct TaskEditorView: View {
         case .edit(let task):
             base = storedDraft(task)
             draft = base
+        case .retryCreate(let proposed):
+            draft = proposed
+            base = TaskDraft()
+            titleFocused = true
+        case .retryPatch(_, let original, let proposed, _):
+            base = original
+            draft = proposed
         }
     }
 
@@ -265,21 +314,27 @@ struct TaskEditorView: View {
         let mode = self.mode
         let services = self.services
         let stored = current
+        let fields = reapplyingFields
         saving = true
         Task {
             defer { saving = false }
             do {
                 switch mode {
-                case .create:
+                case .create, .retryCreate:
                     try await services.tasks.create(draft)
-                case .edit(let task):
+                case .edit(let task), .retryPatch(let task, _, _, _):
+                    guard !(stored ?? task).isDeleted else {
+                        errorMessage = "Cette tâche est supprimée. Restaurez-la explicitement depuis la Corbeille avant de la modifier."
+                        return
+                    }
                     if task.isRecurring {
                         // The revision read now is the precondition when nothing else is queued for the series.
-                        try await services.tasks.updateSeries(stored ?? task, from: base, to: draft)
+                        try await services.tasks.updateSeries(stored ?? task, from: base, to: draft, reapplying: fields)
                     } else {
-                        try await services.tasks.update(task.id, from: base, to: draft)
+                        try await services.tasks.update(task.id, from: base, to: draft, reapplying: fields)
                     }
                 }
+                onSaved?()
                 // Asked at the first reminder, never at launch (03_iOS/03_Notifications_EventKit_Widgets.md §1.9).
                 if draft.reminder != nil {
                     await services.reminders.requestAuthorizationIfNeeded()

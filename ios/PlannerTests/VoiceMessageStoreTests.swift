@@ -9,6 +9,54 @@ struct VoiceMessageStoreTests {
     private static let conversationId = "22222222-2222-4222-8222-222222222222"
     private static let audioFileName = "mémo vocal 01.m4a"
 
+    @Test func recoverySuspensionPreservesAudioAndPendingIdentifierWithoutFurtherRequests() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [])
+        let assistant = FakeVoiceAssistant()
+        let saved = draft(state: .pending)
+        try fixture.seed(saved)
+        let store = fixture.store(api, assistant)
+        defer { store.stop() }
+        try await store.suspendPreservingDraft()
+        await store.appDidBecomeActive()
+        await store.send()
+        await store.verify()
+        #expect(store.draft == saved)
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path(percentEncoded: false)))
+        let persistedData = try #require(fixture.defaults.data(forKey: "voice.draft"))
+        let persisted = try JSONDecoder().decode(VoiceDraft.self, from: persistedData)
+        #expect(persisted == saved)
+        #expect(await api.calls.isEmpty)
+        #expect(assistant.accepted.isEmpty)
+    }
+
+    @Test func recoveryWaitsForAudioFinalizationBeforeFreezingItsDraft() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [])
+        let assistant = FakeVoiceAssistant()
+        let recorder = FakeVoiceRecorder()
+        recorder.delayFinish = true
+        let store = VoiceMessageStore(api: api, assistant: assistant, defaults: fixture.defaults,
+                                      audioDirectory: fixture.directory, recorder: recorder,
+                                      requestRecordingPermission: { true })
+        defer { store.stop() }
+        let started = await store.startRecording()
+        #expect(started)
+        let suspension = Task { try await store.suspendPreservingDraft() }
+        await recorder.waitUntilFinishing()
+        #expect(store.phase == .finishing)
+        recorder.finishNow()
+        try await suspension.value
+        let saved = try #require(store.draft)
+        #expect(saved.state == .interrupted)
+        #expect(saved.conversationId == assistant.conversationId)
+        #expect(FileManager.default.fileExists(atPath: fixture.directory.appending(path: saved.fileName).path(percentEncoded: false)))
+        await store.send()
+        #expect(await api.calls.isEmpty)
+    }
+
     @Test func lostUploadResponseIsRecoveredByReadingWithoutUploadingAgain() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

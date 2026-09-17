@@ -2,7 +2,7 @@ import Foundation
 import PowerSync
 
 /// Why uploads stopped until the user acts (04_Backend/02_API_Contract.md §3.5).
-nonisolated enum SyncBlock: Sendable, Equatable {
+nonisolated enum SyncBlock: Codable, Sendable, Equatable {
     /// The server was restored from a backup: keep the queue, export, then recover.
     case generationChanged(String?)
     /// 400, 403, 404, 413 or an unknown payload: the queue is kept, nothing is dropped.
@@ -30,14 +30,16 @@ nonisolated struct QueuedCommand: Sendable {
     let json: JSONPayload
 
     init?(entry: CrudEntry) throws {
-        guard entry.table == "outbox", entry.op == .put, let data = entry.opData else { return nil }
+        guard entry.table == "outbox" else { return nil }
+        guard entry.op == .put, let data = entry.opData else { throw APIError.invalidResponse }
         func value(_ key: String) -> String? { data[key] ?? nil }
         guard let type = value("type"), let aggregateType = value("aggregate_type"), let aggregateId = value("aggregate_id"),
-              let recordedAt = value("client_recorded_at") else { return nil }
+              let recordedAt = value("client_recorded_at"),
+              let version = value("payload_version").flatMap(Int.init), version > 0 else { throw APIError.invalidResponse }
         var command: [String: JSONPayload] = [
             "clientCommandId": .string(entry.id),
             "type": .string(type),
-            "payloadVersion": .int(Int(value("payload_version") ?? "") ?? 1),
+            "payloadVersion": .int(version),
             "aggregate": ["type": .string(aggregateType), "id": .string(aggregateId)],
             "clientRecordedAt": .string(recordedAt),
         ]
@@ -53,39 +55,119 @@ nonisolated struct QueuedCommand: Sendable {
 /// PowerSync connector: sync tokens from the API, and the upload of the command queue in order.
 actor SyncConnector: PowerSyncBackendConnectorProtocol {
     private let api: APIClient
+    private let database: any PowerSyncDatabaseProtocol
     private let events: AsyncStream<SyncBlock?>.Continuation
     private var block: SyncBlock?
     private var failures = 0
     private var notBefore: Date?
+    private var identityVerified = false
 
-    init(api: APIClient, events: AsyncStream<SyncBlock?>.Continuation) {
+    init(api: APIClient, database: any PowerSyncDatabaseProtocol, events: AsyncStream<SyncBlock?>.Continuation) {
         self.api = api
+        self.database = database
         self.events = events
     }
 
     func fetchCredentials() async throws -> PowerSyncCredentials? {
         do {
+            try await checkRecoveryBlock()
             let token = try await api.syncToken()
+            try await validateIdentity(token)
+            try await checkRecoveryBlock()
             guard let endpoint = token.endpoint else {
                 setBlock(.serverMisconfigured)
                 return nil
             }
             return PowerSyncCredentials(endpoint: endpoint, token: token.token)
+        } catch APIError.unauthorized(code: "SESSION_REPLACED") {
+            throw CancellationError()
         } catch APIError.unauthorized {
-            setBlock(.pairingRequired)
+            try await requireRecovery(.pairingRequired)
             return nil
         }
     }
 
-    func uploadData(database: any PowerSyncDatabaseProtocol) async throws {
+    /// The token is authenticated before any connection can replace the local replica.
+    private func validateIdentity(_ token: SyncTokenResponse) async throws {
+        let generation = try await LocalMeta.serverGeneration(in: database)
+        guard generation?.caseInsensitiveCompare(token.serverGeneration) == .orderedSame else {
+            try await requireRecovery(.generationChanged(token.serverGeneration))
+            throw SyncBlockedError(block: .generationChanged(token.serverGeneration))
+        }
+        let owner = try await LocalMeta.ownerUserId(in: database)
+        if let owner {
+            guard owner.caseInsensitiveCompare(token.userId) == .orderedSame else {
+                try await requireRecovery(.pairingRequired)
+                throw SyncBlockedError(block: .pairingRequired)
+            }
+        } else {
+            // Upgrade only from the same device's still-valid refresh session. The recovery flow
+            // never connects a freshly paired identity to an unowned existing database.
+            guard await api.establishedUserId()?.caseInsensitiveCompare(token.userId) == .orderedSame else {
+                try await requireRecovery(.pairingRequired)
+                throw SyncBlockedError(block: .pairingRequired)
+            }
+            try await LocalMeta.setOwnerUserId(token.userId, in: database)
+        }
+        identityVerified = true
+    }
+
+    private func checkRecoveryBlock() async throws {
         if let block { throw SyncBlockedError(block: block) }
+        if let saved = try await LocalMeta.recoveryBlock(in: database) {
+            setBlock(saved)
+            throw SyncBlockedError(block: saved)
+        }
+    }
+
+    func requireRecovery(_ reason: SyncBlock) async throws {
+        identityVerified = false
+        setBlock(reason)
+        try await LocalMeta.setRecoveryBlock(reason, in: database)
+    }
+
+    /// Remote assistant actions must also honor the identity/generation barrier. The sync-token
+    /// read is outside the assistant API, so it cannot recurse into its own validation callback.
+    func installOnlineActionGuard() async {
+        await api.setOnlineActionValidator { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.verifyOnlineIdentity()
+        }
+    }
+
+    func verifyOnlineIdentity() async throws {
+        try await checkRecoveryBlock()
+        do {
+            let token = try await api.syncToken()
+            try await validateIdentity(token)
+            try await checkRecoveryBlock()
+        } catch APIError.unauthorized(code: "SESSION_REPLACED") {
+            throw CancellationError()
+        } catch APIError.unauthorized {
+            try await requireRecovery(.pairingRequired)
+            throw SyncBlockedError(block: .pairingRequired)
+        }
+    }
+
+    func uploadData(database: any PowerSyncDatabaseProtocol) async throws {
+        try await checkRecoveryBlock()
+        if !identityVerified {
+            try await verifyOnlineIdentity()
+        }
         if let notBefore, notBefore > Date() { throw SyncDeferredError(until: notBefore) }
         guard let transaction = try await database.getNextCrudTransaction() else { return }
         // Entries of the synced tables are only the optimistic projection: acknowledged without upload.
-        let commands = try transaction.crud.compactMap { try QueuedCommand(entry: $0) }
+        let commands: [QueuedCommand]
+        do {
+            commands = try transaction.crud.compactMap { try QueuedCommand(entry: $0) }
+        } catch {
+            let reason = SyncBlock.actionRequired(status: 0, code: "LOCAL_COMMAND_INVALID")
+            setBlock(reason)
+            throw SyncBlockedError(block: reason)
+        }
         if !commands.isEmpty {
             guard let generation = try await LocalMeta.serverGeneration(in: database) else {
-                setBlock(.generationChanged(nil))
+                try await requireRecovery(.generationChanged(nil))
                 throw SyncBlockedError(block: .generationChanged(nil))
             }
             let envelope: JSONPayload = [
@@ -97,19 +179,42 @@ actor SyncConnector: PowerSyncBackendConnectorProtocol {
             do {
                 response = try await api.uploadMutations(Data(try envelope.encodedText().utf8))
             } catch let error as APIError {
+                if error == .unauthorized(code: "SESSION_REPLACED") { throw CancellationError() }
+                if case .unauthorized = error { try await requireRecovery(.pairingRequired) }
+                if case .http(409, .some("SERVER_GENERATION_CHANGED"), _, let generation, _, _) = error {
+                    try await requireRecovery(.generationChanged(generation))
+                }
                 throw handle(error)
             }
+            guard response.serverGeneration.caseInsensitiveCompare(generation) == .orderedSame else {
+                try await requireRecovery(.generationChanged(response.serverGeneration))
+                throw SyncBlockedError(block: .generationChanged(response.serverGeneration))
+            }
+            // An incomplete or unknown receipt never acknowledges the local intent.
+            let expected = Set(commands.map { $0.id.lowercased() })
+            let received = Set(response.results.map { $0.clientCommandId.lowercased() })
+            guard response.results.count == commands.count, expected == received,
+                  response.results.allSatisfy({ result in
+                      switch result.outcome {
+                      case "applied", "rejected": true
+                      case "duplicate": result.original.map { ["applied", "rejected"].contains($0.outcome) } ?? false
+                      default: false
+                      }
+                  }) else { throw handle(.invalidResponse) }
             failures = 0
             notBefore = nil
+            try await checkRecoveryBlock()
             try await record(response, commands: commands, in: database)
         }
         // Acknowledged is not applied: rejections stay in sync_rejections until the user handles them.
+        try await checkRecoveryBlock()
         try await transaction.complete()
     }
 
     /// "Réessayer" in Settings, or a new app version.
     func clearBlock() {
         block = nil
+        identityVerified = false
         failures = 0
         notBefore = nil
         events.yield(nil)
@@ -124,14 +229,14 @@ actor SyncConnector: PowerSyncBackendConnectorProtocol {
         }
         guard !rejected.isEmpty else { return }
         let rejectedAt = Timestamp.format(Date())
-        let rows = rejected.map { command, rejection in
-            [command.id, command.type, command.aggregateId, rejection.code ?? "UNKNOWN", rejection.message ?? "", rejectedAt]
+        let rows = try rejected.map { command, rejection in
+            [command.id, command.type, command.aggregateId, rejection.code ?? "UNKNOWN", rejection.message ?? "", rejectedAt, try command.json.encodedText()]
         }
         try await database.writeTransaction { tx in
             for row in rows {
                 try tx.execute(sql: "DELETE FROM sync_rejections WHERE id = ?", parameters: [row[0]])
                 try tx.execute(
-                    sql: "INSERT INTO sync_rejections (id, command_type, aggregate_id, code, message, rejected_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    sql: "INSERT INTO sync_rejections (id, command_type, aggregate_id, code, message, rejected_at, command_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     parameters: row.map { $0 as Sendable? }
                 )
             }

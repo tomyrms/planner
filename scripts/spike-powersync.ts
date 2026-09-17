@@ -18,7 +18,7 @@ import { executeCommand, type RawCommand } from '../src/modules/sync/index.js';
 const API_URL = process.env.SMOKE_BASE_URL ?? 'http://127.0.0.1:4317';
 const POWERSYNC_URL = process.env.POWERSYNC_URL ?? 'http://127.0.0.1:4318';
 const config = loadConfig();
-if (!config.databaseAdminUrl) throw new Error('DATABASE_ADMIN_URL is required (generation change scenario).');
+if (!config.databaseAdminUrl) throw new Error('DATABASE_ADMIN_URL is required (storage measurements).');
 const CLIENT_VERSION = `${config.minimumClientVersion} (build 1)`;
 
 // Client schema: the synced columns of powersync/sync-config.yaml, plus the local queue tables.
@@ -280,12 +280,12 @@ try {
   check('6', 'version de payload inconnue rejetée explicitement, ancien format accepté',
     versionRejection?.code === 'PAYLOAD_VERSION_UNSUPPORTED' && (await serverTask(oldShapeId)) !== undefined, `rejet ${versionRejection?.code ?? 'absent'}`);
 
-  // Criterion 7: a restore changes the generation; the client stops uploading and keeps its queue.
-  const restoredGeneration = randomUUID();
+  // Criterion 7: only this disposable client has a stale generation. Never rotate the real
+  // server's generation: an iPhone connected during a smoke test would enter recovery.
+  const staleGeneration = randomUUID();
   const localIds = async () => new Set((await localDb.getAll<{ id: string }>('SELECT id FROM tasks')).map((row) => row.id));
   const before = await localIds();
-  await adminPool.query('UPDATE server_meta SET generation = $1', [restoredGeneration]);
-  await waitFor('new generation replicated', () => localDb.getOptional('SELECT 1 FROM server_meta WHERE generation = ?', [restoredGeneration]));
+  await localDb.execute("UPDATE local_meta SET value = ? WHERE id = 'server_generation'", [staleGeneration]);
   const heldId = randomUUID();
   created.push(heldId);
   const held = newCommand('task.create', heldId, { title: '[spike] en attente pendant la restauration' });
@@ -296,13 +296,13 @@ try {
   const stillQueued = heldTransaction?.crud.some((entry) => entry.table === 'outbox' && entry.id === held.clientCommandId) ?? false;
   const after = await localIds();
   const kept = [...before].every((id) => after.has(id));
-  check('7', 'génération changée : envoi suspendu, file et données locales conservées',
-    connector.suspendedGeneration === restoredGeneration && stillQueued && (await serverTask(heldId)) === undefined && kept && after.has(heldId),
+  check('7', 'génération locale périmée : envoi suspendu, file et données locales conservées',
+    connector.suspendedGeneration === originalGeneration && stillQueued && (await serverTask(heldId)) === undefined && kept && after.has(heldId),
     `file ${stillQueued ? 'conservée' : 'perdue'}, ${before.size} tâches locales ${kept ? 'toutes conservées' : 'EN PARTIE PERDUES'} + 1 en attente`);
 
-  // Back to the original generation (local environment only): the held command then goes through.
-  await adminPool.query('UPDATE server_meta SET generation = $1', [originalGeneration]);
-  originalGeneration = undefined;
+  // Test-only recovery of the disposable client, with the same command ID. This does not prove
+  // a real restore or authorize automatically replaying an iPhone queue after a restore.
+  await localDb.execute("UPDATE local_meta SET value = ? WHERE id = 'server_generation'", [originalGeneration]);
   connector.suspendedGeneration = null;
   await waitFor('held command uploaded after recovery', async () => !(await pending()), 30_000);
   check('7', 'reprise : la commande conservée est envoyée une seule fois', (await receipts(held.clientCommandId)) === 1 && (await serverTask(heldId)) !== undefined);
@@ -321,7 +321,6 @@ try {
 } catch (error) {
   check('spike', 'exécution', false, error instanceof Error ? error.message : 'erreur inconnue');
 } finally {
-  if (originalGeneration !== undefined) await adminPool.query('UPDATE server_meta SET generation = $1', [originalGeneration]).catch(() => undefined);
   await db?.disconnectAndClear().catch(() => undefined);
   await db?.close().catch(() => undefined);
   if (deviceId) await auth.revokeDevice(deviceId).catch(() => undefined);

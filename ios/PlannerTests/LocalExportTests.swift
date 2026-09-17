@@ -85,6 +85,7 @@ struct LocalExportTests {
                     """, parameters: [])
                 try tx.execute(sql: "INSERT INTO messages (id, conversation_id, seq, role, kind, text) VALUES ('orphan', 'not-downloaded', 1, 'assistant', 'text', 'Message déjà reçu')", parameters: [])
                 try tx.execute(sql: "INSERT INTO sync_rejections (id, command_type, aggregate_id, code, message) VALUES ('rejected', 'task.patch', 'task', 'REVISION_MISMATCH', 'Conflict')", parameters: [])
+                try tx.execute(sql: "UPDATE sync_rejections SET command_json = ? WHERE id = 'rejected'", parameters: ["{\"clientCommandId\":\"rejected\",\"type\":\"task.patch\",\"payload\":{\"set\":{\"title\":\"Intention refusée\"}}}"])
                 try tx.execute(sql: "INSERT INTO local_meta (id, value) VALUES ('refresh_token', 'DO_NOT_EXPORT_TOKEN'), ('voice_file_name', 'DO_NOT_EXPORT_AUDIO.m4a')", parameters: [])
                 try tx.execute(sql: "INSERT INTO assistant_proposals (id, preview) VALUES ('proposal', 'DO_NOT_EXPORT_PLAN')", parameters: [])
                 try tx.execute(sql: "INSERT INTO scheduled_notifications (id, trigger_at) VALUES ('DO_NOT_EXPORT_DEVICE_NOTIFICATION', '2026-10-25')", parameters: [])
@@ -106,6 +107,10 @@ struct LocalExportTests {
             #expect(archive.conversations.count == 1)
             #expect(archive.unlinkedMessages.count == 1)
             #expect(archive.syncRejections.count == 1)
+            let rejected = try object(#require(archive.syncRejections.first))
+            let rejectedCommand = try object(#require(rejected["command"]))
+            #expect(rejectedCommand["payload"] == ["set": ["title": "Intention refusée"]])
+            #expect(rejected["storedCommand"] == .string("{\"clientCommandId\":\"rejected\",\"type\":\"task.patch\",\"payload\":{\"set\":{\"title\":\"Intention refusée\"}}}"))
             #expect(archive.pendingCommands.isEmpty) // projection CRUD is not a manual command
             let task = try object(#require(archive.tasks.first))
             #expect(task["schedule"] == ["date": "2026-10-25", "time": "02:30", "timeZone": "Europe/Zurich"])

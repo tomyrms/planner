@@ -116,8 +116,8 @@ nonisolated struct TaskRepository: Sendable {
     }
 
     /// One `task.patch` with the fields that changed; nothing is queued when nothing changed.
-    func update(_ id: String, from base: TaskDraft, to draft: TaskDraft) async throws {
-        let set = draft.changes(from: base)
+    func update(_ id: String, from base: TaskDraft, to draft: TaskDraft, reapplying fields: Set<String> = []) async throws {
+        let set = Self.patch(from: base, to: draft, reapplying: fields)
         let reminderChanged = draft.reminder != base.reminder
         guard !set.isEmpty || reminderChanged else { return }
         let command = set.isEmpty ? nil : LocalCommand(type: "task.patch", aggregateId: id, payload: .object(["set": .object(set)]))
@@ -141,6 +141,23 @@ nonisolated struct TaskRepository: Sendable {
                 try Self.writeReminder(task: id, existingId: base.reminderId, rule: draft.reminder, schedule: draft.schedule, deadline: draft.deadline, in: tx)
             }
         }
+    }
+
+    /// Explicit correction of a rejection: its reviewed fields must be sent even while the local
+    /// optimistic projection still contains their refused values. No old identifier/precondition is reused.
+    static func patch(from base: TaskDraft, to draft: TaskDraft, reapplying fields: Set<String>) -> [String: JSONPayload] {
+        var set = draft.changes(from: base)
+        let values: [String: JSONPayload] = [
+            "title": .string(draft.trimmedTitle),
+            "notes": draft.notes.isEmpty ? .null : .string(draft.notes),
+            "priority": .string(draft.priority.rawValue),
+            "projectId": draft.projectId.map(JSONPayload.string) ?? .null,
+            "schedule": draft.schedule?.payload ?? .null,
+            "deadline": draft.deadline?.payload ?? .null,
+            "durationMinutes": draft.durationMinutes.map(JSONPayload.int) ?? .null,
+        ]
+        for field in fields { if let value = values[field] { set[field] = value } }
+        return set
     }
 
     /// Quick planning from a row: keeps the time and zone, changes the day only.
@@ -252,6 +269,7 @@ nonisolated struct SyncQueueRepository: Sendable {
         let aggregateId: String
         let code: String
         let rejectedAt: Date?
+        var commandJSON: String? = nil
     }
 
     func pending() async throws -> (count: Int, oldest: Date?) {
@@ -260,7 +278,7 @@ nonisolated struct SyncQueueRepository: Sendable {
 
     func observeRejections() throws -> AsyncThrowingStream<[Rejection], any Error> {
         try db.watch(
-            sql: "SELECT id, command_type, aggregate_id, code, rejected_at FROM sync_rejections ORDER BY rejected_at DESC",
+            sql: "SELECT id, command_type, aggregate_id, code, rejected_at, command_json FROM sync_rejections ORDER BY rejected_at DESC",
             parameters: []
         ) { cursor in
             Rejection(
@@ -268,7 +286,24 @@ nonisolated struct SyncQueueRepository: Sendable {
                 commandType: try cursor.getStringOptional(name: "command_type") ?? "",
                 aggregateId: try cursor.getStringOptional(name: "aggregate_id") ?? "",
                 code: try cursor.getStringOptional(name: "code") ?? "UNKNOWN",
-                rejectedAt: Timestamp.parse(try cursor.getStringOptional(name: "rejected_at"))
+                rejectedAt: Timestamp.parse(try cursor.getStringOptional(name: "rejected_at")),
+                commandJSON: try cursor.getStringOptional(name: "command_json")
+            )
+        }
+    }
+
+    func rejection(id: String) async throws -> Rejection? {
+        try await db.getOptional(
+            sql: "SELECT id, command_type, aggregate_id, code, rejected_at, command_json FROM sync_rejections WHERE lower(id) = lower(?)",
+            parameters: [id]
+        ) { cursor in
+            Rejection(
+                id: try cursor.getString(name: "id"),
+                commandType: try cursor.getStringOptional(name: "command_type") ?? "",
+                aggregateId: try cursor.getStringOptional(name: "aggregate_id") ?? "",
+                code: try cursor.getStringOptional(name: "code") ?? "UNKNOWN",
+                rejectedAt: Timestamp.parse(try cursor.getStringOptional(name: "rejected_at")),
+                commandJSON: try cursor.getStringOptional(name: "command_json")
             )
         }
     }
