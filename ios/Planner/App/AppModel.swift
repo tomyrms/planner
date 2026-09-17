@@ -89,6 +89,9 @@ final class AppServices {
     let assistantHistory: AssistantRepository
     let assistant: AssistantStore
     let voice: VoiceMessageStore
+    let agenda = AgendaStore()
+    let reminders: ReminderReconciler
+    let navigator = Navigator()
 
     init(db: any PowerSyncDatabaseProtocol, api: APIClient, session: StoredSession) {
         self.db = db
@@ -101,18 +104,60 @@ final class AppServices {
         assistantHistory = AssistantRepository(db: db)
         assistant = AssistantStore(api: api, repository: assistantHistory)
         voice = VoiceMessageStore(api: api, assistant: assistant)
+        reminders = ReminderReconciler(db: db)
     }
 
     func start() async {
         directory.start(tasks)
+        agenda.start(tasks)
+        reminders.start()
+        let reminders = self.reminders
+        assistant.onResult = { reminders.requestPass() }
+        let navigator = self.navigator
+        NotificationRouter.shared.attach(
+            open: { target in navigator.target = target },
+            complete: { [weak self] target in await self?.complete(target) }
+        )
         await sync.start()
     }
 
     func stop() async {
+        NotificationRouter.shared.detach()
         assistant.stop()
         directory.stop()
+        agenda.stop()
+        reminders.stop()
         await sync.stop()
     }
+
+    /// "Terminé" from a notification (§1.8): the object is read again; nothing happens if it is already
+    /// done or deleted; otherwise the same command as the UI.
+    func complete(_ target: OpenTarget) async {
+        guard let task = try? await tasks.task(id: target.taskId), !task.isDeleted, !task.isCompleted else { return }
+        if task.isRecurring {
+            guard let key = target.occurrenceKey else { return }
+            let status = try? await tasks.occurrenceStatus(taskId: task.id, key: key)
+            guard status == nil || status == .open else { return }
+            try? await tasks.closeOccurrence(task, key: key, skip: false)
+        } else {
+            try? await tasks.setCompleted(task.id, true)
+        }
+        reminders.requestPass()
+    }
+}
+
+/// Where a notification asks to go: a task, or one occurrence of a series.
+nonisolated struct OpenTarget: Identifiable, Hashable, Sendable {
+    let taskId: String
+    let occurrenceKey: String?
+
+    var id: String { "\(taskId):\(occurrenceKey ?? "")" }
+}
+
+/// The screen a notification opens, presented above the tabs.
+@Observable
+final class Navigator {
+    var target: OpenTarget?
 }
 
 /// Lists and the Inbox count, observed once for all screens.

@@ -73,6 +73,8 @@ final class AssistantStore {
     private var turns: [String: TurnControls] = [:]
     private var snapshots: [String: TurnSnapshot] = [:]
     @ObservationIgnored private var observations: [Task<Void, Never>] = []
+    /// Called when a turn changed something: reminders are reconciled at once, then again after replication.
+    @ObservationIgnored var onResult: (() -> Void)?
 
     private enum Keys {
         static let draft = "assistant.draft"
@@ -239,7 +241,10 @@ final class AssistantStore {
 
     private func accept(_ snapshot: TurnSnapshot) {
         snapshots[snapshot.turnId] = snapshot
-        if !snapshot.results.isEmpty { successCount += 1 }
+        if !snapshot.results.isEmpty {
+            successCount += 1
+            onResult?()
+        }
         forget()
         phase = .idle
         rebuild()

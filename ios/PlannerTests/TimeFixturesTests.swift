@@ -87,11 +87,12 @@ struct TimeFixturesTests {
                 anchor: try date(object["anchor"]), before: try date(object["beforeDate"]),
                 materialized: rows, ignoredBefore: CivilDate(object["ignoredBefore"] as? String)
             )
-            return ["count": result.count, "latestOccurrenceKey": result.latest?.description ?? NSNull()]
+            let latest: Any = result.latest.map { $0.description } ?? NSNull()
+            return ["count": result.count, "latestOccurrenceKey": latest]
         case "fixedMember":
             let rule = try fixedRule(object["rule"])
             let anchor = try date(object["anchor"])
-            return (object["dates"] as? [String] ?? []).map { rule.contains(CivilDate($0)!, anchor: anchor) }
+            return (object["dates"] as? [String] ?? []).map { rule.contains(CivilDate($0)!, anchor: anchor) } as [Bool]
         case "nextAfterFromDate":
             return try afterRule(object["rule"]).nextDate(after: try date(object["completedLocalDate"])).description
         case "nextAfter":
@@ -143,7 +144,7 @@ struct TimeFixturesTests {
         let complete = object["action"] as? String == "complete"
         state["status"] = complete ? "completed" : "skipped"
         state["completedAt"] = complete ? InstantText.format(now) : NSNull()
-        state["successorOccurrenceKey"] = try #require(OccurrenceKey.next(after: key, date: next))
+        state["successorOccurrenceKey"] = OccurrenceKey.next(after: key, date: next) ?? NSNull()
         return ["outcome": "applied", "state": state]
     }
 

@@ -64,7 +64,8 @@ nonisolated enum ReminderRule: Hashable, Sendable {
         }
     }
 
-    private static func offsetText(_ minutes: Int) -> String {
+    /// "30 min", "1 h", "1 jour".
+    static func offsetText(_ minutes: Int) -> String {
         if minutes % 1440 == 0 { return minutes == 1440 ? "1 jour" : "\(minutes / 1440) jours" }
         return DurationText.format(minutes)
     }

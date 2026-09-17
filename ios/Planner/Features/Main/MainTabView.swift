@@ -5,12 +5,13 @@ struct MainTabView: View {
     @Environment(AppServices.self) private var services
 
     var body: some View {
+        @Bindable var navigator = services.navigator
         TabView {
             Tab("Aujourd’hui", systemImage: "sun.max") {
                 TodayView()
             }
             Tab("Calendrier", systemImage: "calendar") {
-                ComingSoonView(title: "Calendrier", systemImage: "calendar", message: "Le mois et l’agenda du jour arrivent avec la gestion du temps.")
+                CalendarView()
             }
             Tab("Assistant", systemImage: "text.bubble") {
                 AssistantView()
@@ -32,6 +33,9 @@ struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: services.undo.current?.id)
+        .sheet(item: $navigator.target) { target in
+            OpenTargetView(target: target)
+        }
     }
 }
 

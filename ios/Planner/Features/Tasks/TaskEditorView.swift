@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Native sheet working on a draft: nothing is written before "Enregistrer", a remote change never
 /// overwrites what is being typed (03_iOS/01_SwiftUI_Architecture.md, 02_Design/05_Calendar_Task_UX.md).
+/// A series is edited as a whole here; one occurrence is changed from its own sheet.
 struct TaskEditorView: View {
     enum Mode {
         case create(projectId: String?, schedule: TimeValue?)
@@ -17,6 +18,7 @@ struct TaskEditorView: View {
     @State private var current: TaskItem?
     @State private var confirmingDiscard = false
     @State private var confirmingConflict = false
+    @State private var confirmingEnd = false
     @State private var saving = false
     @State private var errorMessage: String?
     @FocusState private var titleFocused: Bool
@@ -36,24 +38,43 @@ struct TaskEditorView: View {
                               systemImage: "exclamationmark.triangle")
                     }
                 }
-                if isRecurring {
+                TimeValueSection(
+                    title: isSeries ? "Première occurrence" : "Prévu",
+                    value: $draft.schedule,
+                    allowsNone: !isSeries,
+                    footer: isSeries ? "L’heure s’applique à toutes les occurrences." : nil
+                )
+                if draft.schedule?.time != nil {
                     Section {
-                        Label("Tâche répétée : le prévu et l’échéance se modifieront avec la gestion des répétitions.", systemImage: "repeat")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    TimeValueSection(title: "Prévu", value: $draft.schedule)
-                    if draft.schedule?.time != nil {
-                        Section {
-                            Picker("Durée", selection: $draft.durationMinutes) {
-                                Text("Aucune").tag(Int?.none)
-                                ForEach([15, 30, 45, 60, 90, 120, 180], id: \.self) { minutes in
-                                    Text(DurationText.format(minutes)).tag(Int?.some(minutes))
-                                }
+                        Picker("Durée", selection: $draft.durationMinutes) {
+                            Text("Aucune").tag(Int?.none)
+                            ForEach(durationChoices, id: \.self) { minutes in
+                                Text(DurationText.format(minutes)).tag(Int?.some(minutes))
                             }
                         }
                     }
+                }
+                if !isSeries {
                     TimeValueSection(title: "Échéance", value: $draft.deadline)
+                }
+                ReminderSection(
+                    reminder: $draft.reminder,
+                    schedule: draft.schedule,
+                    deadline: isSeries ? nil : draft.deadline,
+                    allowsAbsolute: !isSeries,
+                    savedId: draft.reminder == base.reminder ? base.reminderId : nil,
+                    isNew: draft.reminder != base.reminder
+                )
+                if canChooseRecurrence {
+                    RecurrenceSection(recurrence: recurrenceBinding, anchor: draft.schedule?.date ?? .today(), allowsNone: isCreating)
+                } else {
+                    Section {
+                        LabeledContent("Répétition", value: "Aucune")
+                    } header: {
+                        Text("Répétition")
+                    } footer: {
+                        Text("Une tâche existante ne devient pas répétée : créez une nouvelle tâche avec une répétition.")
+                    }
                 }
                 Section {
                     Picker("Liste", selection: $draft.projectId) {
@@ -71,15 +92,22 @@ struct TaskEditorView: View {
                 if case .edit(let task) = mode {
                     AssistantChangesSection(taskId: task.id)
                     Section {
+                        if task.isRecurring && !task.isDeleted {
+                            if liveTask?.isCompleted ?? false {
+                                Button("Reprendre la série") { setSeriesRunning(true) }
+                            } else {
+                                Button("Arrêter la série") { confirmingEnd = true }
+                            }
+                        }
                         if task.isDeleted {
                             Button("Restaurer") { setDeleted(task, false) }
                         } else {
-                            Button("Supprimer", role: .destructive) { setDeleted(task, true) }
+                            Button(task.isRecurring ? "Supprimer la série" : "Supprimer", role: .destructive) { setDeleted(task, true) }
                         }
                     }
                 }
             }
-            .navigationTitle(isCreating ? "Nouvelle tâche" : "Tâche")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -89,7 +117,7 @@ struct TaskEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isCreating ? "Ajouter" : "Enregistrer", action: save)
-                        .disabled(!draft.isValid || saving || (!isCreating && !hasChanges))
+                        .disabled(!canSave)
                 }
             }
             .interactiveDismissDisabled(hasChanges)
@@ -104,6 +132,12 @@ struct TaskEditorView: View {
             } message: {
                 Text("Elle a été modifiée ailleurs pendant l’édition.")
             }
+            .confirmationDialog("Arrêter la série ?", isPresented: $confirmingEnd, titleVisibility: .visible) {
+                Button("Arrêter la série", role: .destructive) { setSeriesRunning(false) }
+                Button("Continuer", role: .cancel) {}
+            } message: {
+                Text("Plus aucune occurrence ne sera proposée. La série reste dans Terminées et peut reprendre.")
+            }
             .alert("Enregistrement impossible", isPresented: hasError) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -114,35 +148,80 @@ struct TaskEditorView: View {
         }
     }
 
+    private let durationChoices = [15, 30, 45, 60, 90, 120, 180]
+
+    private var title: String {
+        if isCreating { return "Nouvelle tâche" }
+        return isSeries ? "Tâche répétée" : "Tâche"
+    }
+
     private var isCreating: Bool {
         if case .create = mode { return true }
         return false
     }
 
-    private var editedTaskId: String? {
-        if case .edit(let task) = mode { return task.id }
+    private var editedTask: TaskItem? {
+        if case .edit(let task) = mode { return task }
         return nil
     }
 
-    private var isRecurring: Bool {
-        if case .edit(let task) = mode { return task.isRecurring }
+    private var editedTaskId: String? { editedTask?.id }
+
+    /// The stored task as it is now (for "Arrêter" / "Reprendre").
+    private var liveTask: TaskItem? { current ?? editedTask }
+
+    private var isSeries: Bool { draft.recurrence != nil }
+
+    /// The command catalogue only creates series: a simple task keeps no recurrence after creation.
+    private var canChooseRecurrence: Bool {
+        isCreating || (editedTask?.isRecurring ?? false)
+    }
+
+    /// Choosing a repetition gives the task a planned date and removes its deadline (a series has none in V1).
+    private var recurrenceBinding: Binding<RecurrenceRule?> {
+        Binding(
+            get: { draft.recurrence },
+            set: { rule in
+                draft.recurrence = rule
+                if rule != nil {
+                    if draft.schedule == nil { draft.schedule = TimeValue(date: .today()) }
+                    draft.deadline = nil
+                    if let reminder = draft.reminder, reminder.usesDeadline || isAbsolute(reminder) { draft.reminder = nil }
+                }
+            }
+        )
+    }
+
+    private func isAbsolute(_ rule: ReminderRule) -> Bool {
+        if case .absolute = rule { return true }
         return false
     }
 
     private var hasChanges: Bool { draft != base }
 
+    /// A new or changed reminder must have its base now, or the server refuses it (REMINDER_BASE_MISSING).
+    private var reminderIsValid: Bool {
+        guard let reminder = draft.reminder, draft.reminder != base.reminder else { return true }
+        return ReminderMath.trigger(reminder, schedule: draft.schedule, deadline: isSeries ? nil : draft.deadline, deviceZone: .current) != .baseMissing
+    }
+
+    private var canSave: Bool {
+        draft.isValid && draft.isValidSeries && reminderIsValid && !saving && (isCreating || hasChanges)
+    }
+
     /// The stored task no longer matches what the draft started from (change or deletion elsewhere).
     private var changedElsewhere: Bool {
         guard let current else { return false }
-        return current.isDeleted != currentWasDeleted || TaskDraft(task: current) != base
+        return current.isDeleted != currentWasDeleted || storedDraft(current) != base
+    }
+
+    private func storedDraft(_ task: TaskItem) -> TaskDraft {
+        TaskDraft(task: task, reminder: services.agenda.reminder(of: task.id))
     }
 
     private var currentIsDeleted: Bool { current?.isDeleted ?? false }
 
-    private var currentWasDeleted: Bool {
-        if case .edit(let task) = mode { return task.isDeleted }
-        return false
-    }
+    private var currentWasDeleted: Bool { editedTask?.isDeleted ?? false }
 
     private var hasError: Binding<Bool> {
         Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -158,7 +237,7 @@ struct TaskEditorView: View {
             base = draft
             titleFocused = true
         case .edit(let task):
-            base = TaskDraft(task: task)
+            base = storedDraft(task)
             draft = base
         }
     }
@@ -184,16 +263,26 @@ struct TaskEditorView: View {
         let draft = self.draft
         let base = self.base
         let mode = self.mode
-        let tasks = services.tasks
+        let services = self.services
+        let stored = current
         saving = true
         Task {
             defer { saving = false }
             do {
                 switch mode {
                 case .create:
-                    try await tasks.create(draft)
+                    try await services.tasks.create(draft)
                 case .edit(let task):
-                    try await tasks.update(task.id, from: base, to: draft)
+                    if task.isRecurring {
+                        // The revision read now is the precondition when nothing else is queued for the series.
+                        try await services.tasks.updateSeries(stored ?? task, from: base, to: draft)
+                    } else {
+                        try await services.tasks.update(task.id, from: base, to: draft)
+                    }
+                }
+                // Asked at the first reminder, never at launch (03_iOS/03_Notifications_EventKit_Widgets.md §1.9).
+                if draft.reminder != nil {
+                    await services.reminders.requestAuthorizationIfNeeded()
                 }
                 dismiss()
             } catch {
@@ -204,8 +293,28 @@ struct TaskEditorView: View {
 
     private func showCurrent() {
         guard let current else { return }
-        base = TaskDraft(task: current)
+        base = storedDraft(current)
         draft = base
+    }
+
+    private func setSeriesRunning(_ running: Bool) {
+        guard let task = liveTask else { return }
+        let services = self.services
+        Task {
+            do {
+                if running {
+                    try await services.tasks.setCompleted(task.id, false)
+                } else {
+                    try await services.tasks.endSeries(task)
+                    services.undo.offer("Série « \(task.title) » arrêtée.") {
+                        try? await services.tasks.setCompleted(task.id, false)
+                    }
+                }
+                dismiss()
+            } catch {
+                errorMessage = "La modification n’a pas pu être enregistrée sur cet iPhone."
+            }
+        }
     }
 
     private func setDeleted(_ task: TaskItem, _ deleted: Bool) {
@@ -230,18 +339,35 @@ struct TaskEditorView: View {
 struct TimeValueSection: View {
     let title: String
     @Binding var value: TimeValue?
+    var allowsNone = true
+    var footer: String?
 
     var body: some View {
-        Section(title) {
+        Section {
+            TimeValueFields(value: $value, allowsNone: allowsNone)
+        } header: {
+            Text(title)
+        } footer: {
+            if let footer { Text(footer) }
+        }
+    }
+}
+
+struct TimeValueFields: View {
+    @Binding var value: TimeValue?
+    var allowsNone = true
+
+    var body: some View {
+        if allowsNone {
             Toggle("Date", isOn: hasDate)
-            if let current = value {
-                DatePicker("Jour", selection: day, displayedComponents: .date)
-                Toggle("Heure", isOn: hasTime)
-                if current.time != nil {
-                    DatePicker("Heure", selection: time, displayedComponents: .hourAndMinute)
-                    if current.isInOtherZone, let zone = current.timeZone {
-                        LabeledContent("Fuseau", value: zone)
-                    }
+        }
+        if let current = value {
+            DatePicker("Jour", selection: day, displayedComponents: .date)
+            Toggle("Heure", isOn: hasTime)
+            if current.time != nil {
+                DatePicker("Heure", selection: time, displayedComponents: .hourAndMinute)
+                if current.isInOtherZone, let zone = current.timeZone {
+                    LabeledContent("Fuseau", value: zone)
                 }
             }
         }
@@ -280,14 +406,20 @@ struct TimeValueSection: View {
         Binding(
             get: {
                 guard let current = value, let clock = current.time else { return Date() }
-                return Calendar.planner(in: .current).date(from: DateComponents(
-                    year: current.date.year, month: current.date.month, day: current.date.day,
-                    hour: clock.hour, minute: clock.minute)) ?? Date()
+                return LocalTime.date(clock, on: current.date)
             },
             set: { date in
                 guard let current = value else { return }
                 value = TimeValue(date: current.date, time: LocalTime(date), timeZone: TimeZone.current.identifier)
             }
         )
+    }
+}
+
+nonisolated extension LocalTime {
+    /// A `Date` for pickers: this wall-clock time on that day, on this iPhone.
+    static func date(_ time: LocalTime, on day: CivilDate) -> Date {
+        Calendar.planner(in: .current).date(from: DateComponents(
+            year: day.year, month: day.month, day: day.day, hour: time.hour, minute: time.minute)) ?? Date()
     }
 }

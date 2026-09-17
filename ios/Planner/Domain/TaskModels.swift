@@ -19,7 +19,7 @@ nonisolated enum Priority: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A task as the screens see it (04_Backend/03_Data_Model.md). Recurring occurrences arrive at step 6.
+/// A task as the screens see it (04_Backend/03_Data_Model.md). For a series, `isCompleted` means "series ended".
 nonisolated struct TaskItem: Identifiable, Hashable, Sendable {
     let id: String
     var projectId: String?
@@ -31,12 +31,33 @@ nonisolated struct TaskItem: Identifiable, Hashable, Sendable {
     var schedule: TimeValue?
     var durationMinutes: Int?
     var deadline: TimeValue?
-    var isRecurring: Bool
+    var recurrence: RecurrenceRule?
+    var missedIgnoredBefore: CivilDate?
     var deletedAt: Date?
     var revision: Int
     var createdAt: Date?
 
     var isDeleted: Bool { deletedAt != nil }
+    var isRecurring: Bool { recurrence != nil }
+}
+
+/// A materialized occurrence of a series (only occurrences with a state or a move exist).
+nonisolated struct OccurrenceRow: Hashable, Sendable {
+    let taskId: String
+    let key: String
+    var status: OccurrenceStatus
+    var completedAt: Date?
+    var override: TimeValue?
+    var successorKey: String?
+}
+
+/// A reminder as replicated (deleted reminders leave the replica).
+nonisolated struct ReminderRow: Identifiable, Hashable, Sendable {
+    let id: String
+    let taskId: String
+    let occurrenceKey: String?
+    let rule: ReminderRule
+    let baseMissing: Bool
 }
 
 nonisolated struct ProjectItem: Identifiable, Hashable, Sendable {
@@ -49,7 +70,7 @@ nonisolated struct ProjectItem: Identifiable, Hashable, Sendable {
 nonisolated enum TaskFilter: Hashable, Sendable {
     case inbox
     case project(String)
-    /// Active, non-recurring tasks with a planned or due date (Today, Upcoming).
+    /// Active tasks with a planned or due date, series included (Today, Upcoming, Calendar).
     case dated
     case completed
     case trash
@@ -65,10 +86,17 @@ nonisolated struct TaskDraft: Equatable, Sendable {
     var schedule: TimeValue?
     var deadline: TimeValue?
     var durationMinutes: Int?
+    /// Only at creation: the command catalogue has no way to turn a simple task into a series later.
+    var recurrence: RecurrenceRule?
+    /// The single reminder of the V1 editor, and its identifier once saved.
+    var reminder: ReminderRule?
+    var reminderId: String?
 
     init() {}
 
-    init(task: TaskItem) {
+    init(task: TaskItem, reminder: ReminderRow? = nil) {
+        self.reminder = reminder?.rule
+        reminderId = reminder?.id
         title = task.title
         notes = task.notes ?? ""
         priority = task.priority
@@ -76,6 +104,12 @@ nonisolated struct TaskDraft: Equatable, Sendable {
         schedule = task.schedule
         deadline = task.deadline
         durationMinutes = task.durationMinutes
+        recurrence = task.recurrence
+    }
+
+    /// A series needs a planned date and has no deadline in V1.
+    var isValidSeries: Bool {
+        recurrence == nil || (schedule != nil && deadline == nil)
     }
 
     var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }

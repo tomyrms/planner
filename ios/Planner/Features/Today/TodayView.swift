@@ -1,17 +1,17 @@
 import SwiftUI
 
 /// Today (02_Design/05_Calendar_Task_UX.md): commitments, to do, deadlines, then what to replan.
+/// Series appear through their occurrences of the day and their missed occurrences.
 struct TodayView: View {
     @Environment(AppServices.self) private var services
     @Environment(\.scenePhase) private var scenePhase
-    @State private var tasks: [TaskItem] = []
     @State private var today = CivilDate.today()
     @State private var creating = false
     @State private var showReplan = true
     @State private var showOverdue = true
 
     var body: some View {
-        let agenda = TodayAgenda(tasks: tasks, today: today)
+        let agenda = services.agenda.today(today)
         NavigationStack {
             List {
                 SyncNotice()
@@ -28,7 +28,7 @@ struct TodayView: View {
                 collapsible("Échéance dépassée", agenda.overdue, isExpanded: $showOverdue)
             }
             .overlay {
-                if agenda.isEmpty {
+                if services.agenda.loaded && agenda.isEmpty {
                     ContentUnavailableView {
                         Label("Rien de prévu aujourd’hui.", systemImage: "sun.max")
                     } actions: {
@@ -45,7 +45,6 @@ struct TodayView: View {
             .sheet(isPresented: $creating) {
                 TaskEditorView(mode: .create(projectId: nil, schedule: TimeValue(date: today)))
             }
-            .task { await observe() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { today = .today() }
             }
@@ -53,23 +52,24 @@ struct TodayView: View {
     }
 
     @ViewBuilder
-    private func rows(_ title: String, _ items: [TaskItem]) -> some View {
+    private func rows(_ title: String, _ items: [AgendaItem]) -> some View {
         if !items.isEmpty {
             Section(title) {
-                ForEach(items) { task in
-                    TaskRow(task: task, context: .today)
+                ForEach(items) { item in
+                    TaskRow(item: item, context: .today)
                 }
             }
         }
     }
 
+    /// Late items show their day: they are listed with the list context.
     @ViewBuilder
-    private func collapsible(_ title: String, _ items: [TaskItem], isExpanded: Binding<Bool>) -> some View {
+    private func collapsible(_ title: String, _ items: [AgendaItem], isExpanded: Binding<Bool>) -> some View {
         if !items.isEmpty {
             Section {
                 DisclosureGroup(isExpanded: isExpanded) {
-                    ForEach(items) { task in
-                        TaskRow(task: task, context: .list)
+                    ForEach(items) { item in
+                        TaskRow(item: item, context: .list)
                     }
                 } label: {
                     Text("\(title) (\(items.count))")
@@ -77,14 +77,6 @@ struct TodayView: View {
                 }
             }
         }
-    }
-
-    private func observe() async {
-        do {
-            for try await rows in try services.tasks.observeTasks(.dated) {
-                tasks = rows
-            }
-        } catch {}
     }
 }
 

@@ -172,49 +172,34 @@ struct TaskListScreen: View {
     }
 }
 
-/// À venir: the next 14 days, then later.
+/// À venir: the next 14 days grouped by date, computed occurrences included, then later.
 struct UpcomingView: View {
     @Environment(AppServices.self) private var services
-    @State private var tasks: [TaskItem] = []
-    @State private var loaded = false
 
     var body: some View {
-        let today = CivilDate.today()
-        let agenda = UpcomingAgenda(tasks: tasks, today: today)
+        let agenda = services.agenda.upcoming(.today())
         List {
             ForEach(agenda.days) { day in
                 Section(DateText.heading(day.date)) {
-                    ForEach(day.tasks) { task in
-                        TaskRow(task: task, context: .today)
+                    ForEach(day.agenda.all) { item in
+                        TaskRow(item: item, context: .day)
                     }
                 }
             }
             if !agenda.later.isEmpty {
                 Section("Plus tard") {
-                    ForEach(agenda.later) { task in
-                        TaskRow(task: task, context: .list)
+                    ForEach(agenda.later) { item in
+                        TaskRow(item: item, context: .list)
                     }
                 }
             }
         }
         .overlay {
-            if loaded && agenda.isEmpty {
+            if services.agenda.loaded && agenda.isEmpty {
                 ContentUnavailableView("Rien de prévu ces prochains jours.", systemImage: "calendar")
             }
         }
         .navigationTitle("À venir")
-        .task { await observe() }
-    }
-
-    private func observe() async {
-        do {
-            for try await rows in try services.tasks.observeTasks(.dated) {
-                tasks = rows
-                loaded = true
-            }
-        } catch {
-            loaded = true
-        }
     }
 }
 

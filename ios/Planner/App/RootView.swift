@@ -23,6 +23,7 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard case .ready(let services) = app.phase else { return }
             if phase == .active {
+                services.reminders.requestPass()
                 Task { await services.sync.resumeIfRecoverable() }
             } else {
                 // Leaving the foreground ends a recording without sending it.

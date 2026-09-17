@@ -64,7 +64,9 @@ nonisolated enum LocalDatabase {
         Table(name: "sync_rejections", columns: [
             .text("command_type"), .text("aggregate_id"), .text("code"), .text("message"), .text("rejected_at"),
         ], localOnly: true),
-        Table(name: "local_meta", columns: [.text("value")], localOnly: true)
+        Table(name: "local_meta", columns: [.text("value")], localOnly: true),
+        // Proof that iOS accepted a notification request before its time (ADR-018): never synchronized.
+        Table(name: "scheduled_notifications", columns: [.text("trigger_at"), .text("accepted_at")], localOnly: true)
     )
 
     static func open() -> any PowerSyncDatabaseProtocol {
@@ -112,6 +114,8 @@ nonisolated struct LocalCommand: Sendable {
         case never
         /// Follows the previous queued command of the same aggregate, if any (offline causality).
         case afterPendingCommand
+        /// Sensitive commands (series): the previous queued command, else the revision read.
+        case required(revision: Int)
     }
 
     let id: String
@@ -137,8 +141,13 @@ nonisolated enum Outbox {
     /// Must run inside the write transaction that holds the projection.
     static func insert(_ command: LocalCommand, in tx: any Transaction) throws {
         var precondition = Precondition.unconditional
-        if case .afterPendingCommand = command.chaining, let previous = try lastPendingCommand(for: command.aggregateId, in: tx) {
-            precondition = .afterCommand(previous)
+        switch command.chaining {
+        case .never:
+            break
+        case .afterPendingCommand:
+            if let previous = try lastPendingCommand(for: command.aggregateId, in: tx) { precondition = .afterCommand(previous) }
+        case .required(let revision):
+            precondition = try lastPendingCommand(for: command.aggregateId, in: tx).map(Precondition.afterCommand) ?? .revision(revision)
         }
         try tx.execute(
             sql: """
@@ -179,7 +188,8 @@ nonisolated enum Outbox {
 nonisolated extension TaskItem {
     static let selectColumns = """
         id, project_id, title, notes, priority, status, completed_at, scheduled_date, scheduled_time, scheduled_time_zone,
-        duration_minutes, deadline_date, deadline_time, deadline_time_zone, recurrence, deleted_at, revision, created_at
+        duration_minutes, deadline_date, deadline_time, deadline_time_zone, recurrence, missed_ignored_before,
+        deleted_at, revision, created_at
         """
 
     init(row: any SqlCursor) throws {
@@ -202,7 +212,8 @@ nonisolated extension TaskItem {
                 time: try row.getStringOptional(name: "deadline_time"),
                 timeZone: try row.getStringOptional(name: "deadline_time_zone")
             ),
-            isRecurring: try row.getStringOptional(name: "recurrence") != nil,
+            recurrence: RecurrenceRule(json: try row.getStringOptional(name: "recurrence")),
+            missedIgnoredBefore: CivilDate(try row.getStringOptional(name: "missed_ignored_before")),
             deletedAt: Timestamp.parse(try row.getStringOptional(name: "deleted_at")),
             revision: try row.getIntOptional(name: "revision") ?? 0,
             createdAt: Timestamp.parse(try row.getStringOptional(name: "created_at"))

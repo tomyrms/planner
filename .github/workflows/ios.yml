@@ -59,7 +59,7 @@ jobs:
             -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 17' -derivedDataPath build/DerivedDataTests \
             -skipPackagePluginValidation -skipMacroValidation \
             > build/xcodebuild-test.log 2>&1 || status=$?
-          grep -E '(error|warning): |✘|failed|passed after' build/xcodebuild-test.log | sort -u | head -80 || true
+          grep -E '(error|warning): |✘|Test run with|TEST SUCCEEDED|TEST FAILED' build/xcodebuild-test.log | sort -u | head -80 || true
           tail -n 5 build/xcodebuild-test.log
           if [ "$status" -ne 0 ]; then
             xcrun simctl list devices available | head -40

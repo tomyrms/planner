@@ -19,7 +19,7 @@ enum TouchTarget {
 }
 
 /// Dates as the screens say them: "aujourd’hui", "demain", "vendredi", "18 sept.".
-enum DateText {
+nonisolated enum DateText {
     static func day(_ date: CivilDate, today: CivilDate) -> String {
         switch today.days(until: date) {
         case 0: return "aujourd’hui"
@@ -53,7 +53,7 @@ enum DateText {
     }
 }
 
-extension String {
+nonisolated extension String {
     var capitalizedFirst: String {
         guard let first else { return self }
         return first.uppercased() + dropFirst()

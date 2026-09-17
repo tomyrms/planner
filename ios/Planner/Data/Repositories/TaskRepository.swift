@@ -52,7 +52,7 @@ nonisolated struct TaskRepository: Sendable {
             ("deleted_at IS NULL AND status = 'active' AND project_id = ? ORDER BY scheduled_date IS NULL, scheduled_date, created_at DESC", [id])
         case .dated:
             ("""
-            deleted_at IS NULL AND status = 'active' AND recurrence IS NULL
+            deleted_at IS NULL AND status = 'active'
             AND (scheduled_date IS NOT NULL OR deadline_date IS NOT NULL)
             ORDER BY coalesce(scheduled_date, deadline_date), scheduled_time IS NULL, scheduled_time
             """, [])
@@ -84,6 +84,12 @@ nonisolated struct TaskRepository: Sendable {
         if let schedule = draft.schedule { payload["schedule"] = schedule.payload }
         if let deadline = draft.deadline { payload["deadline"] = deadline.payload }
         if let minutes = draft.durationMinutes { payload["durationMinutes"] = .int(minutes) }
+        if let recurrence = draft.recurrence { payload["recurrence"] = recurrence.payload }
+        let reminderId = UUID().uuidString.lowercased()
+        if let rule = draft.reminder {
+            payload["reminders"] = [["id": .string(reminderId), "rule": rule.payload]]
+        }
+        let recurrenceText = try draft.recurrence?.payload.encodedText()
         let command = LocalCommand(type: "task.create", aggregateId: id, chaining: .never, payload: .object(payload))
         let columns = TaskColumns(draft)
         let now = Timestamp.format(Date())
@@ -98,6 +104,12 @@ nonisolated struct TaskRepository: Sendable {
                 """,
                 parameters: columns.parameters(prefix: [id], searchText: SearchText.normalize([draft.trimmedTitle, draft.notes, projectName]), suffix: [now, now])
             )
+            if let recurrenceText {
+                try tx.execute(sql: "UPDATE tasks SET recurrence = ? WHERE id = ?", parameters: [recurrenceText, id])
+            }
+            if let rule = draft.reminder {
+                try Self.insertReminderRow(id: reminderId, taskId: id, rule: rule, schedule: draft.schedule, deadline: draft.deadline, now: now, in: tx)
+            }
             try Outbox.insert(command, in: tx)
         }
         return id
@@ -106,8 +118,9 @@ nonisolated struct TaskRepository: Sendable {
     /// One `task.patch` with the fields that changed; nothing is queued when nothing changed.
     func update(_ id: String, from base: TaskDraft, to draft: TaskDraft) async throws {
         let set = draft.changes(from: base)
-        guard !set.isEmpty else { return }
-        let command = LocalCommand(type: "task.patch", aggregateId: id, payload: .object(["set": .object(set)]))
+        let reminderChanged = draft.reminder != base.reminder
+        guard !set.isEmpty || reminderChanged else { return }
+        let command = set.isEmpty ? nil : LocalCommand(type: "task.patch", aggregateId: id, payload: .object(["set": .object(set)]))
         let columns = TaskColumns(draft)
         let now = Timestamp.format(Date())
         try await db.writeTransaction { tx in
@@ -121,7 +134,12 @@ nonisolated struct TaskRepository: Sendable {
                 """,
                 parameters: columns.parameters(prefix: [], searchText: SearchText.normalize([draft.trimmedTitle, draft.notes, projectName]), suffix: [now, id])
             )
-            try Outbox.insert(command, in: tx)
+            // The planning change comes first: a new reminder then refers to the new base.
+            if let command { try Outbox.insert(command, in: tx) }
+            try Self.refreshReminderStates(taskId: id, schedule: draft.schedule, deadline: draft.deadline, in: tx)
+            if reminderChanged {
+                try Self.writeReminder(task: id, existingId: base.reminderId, rule: draft.reminder, schedule: draft.schedule, deadline: draft.deadline, in: tx)
+            }
         }
     }
 
