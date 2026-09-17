@@ -11,47 +11,108 @@ struct AssistantView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: Spacing.md) {
-                        if store.isEmptyConversation {
-                            EmptyAssistantHint()
-                        }
-                        ForEach(store.entries) { entry in
-                            MessageView(entry: entry)
-                                .id(entry.id)
-                        }
-                        TurnStateView()
-                            .id("state")
+            ConversationTimeline()
+                .id(store.conversationId)
+                .safeAreaInset(edge: .bottom) {
+                    Composer(focused: $composerFocused)
+                }
+                .navigationTitle("Assistant")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Historique", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                            .disabled(services.voice.phase != .idle)
                     }
-                    .padding(Spacing.lg)
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Nouvelle conversation", systemImage: "square.and.pencil") { store.newConversation() }
+                            .disabled(store.pending != nil || store.isBusy || (store.isEmptyConversation && store.draft.isEmpty) || services.voice.phase != .idle)
+                    }
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: store.entries.count) {
-                    withAnimation(.easeOut(duration: 0.22)) { proxy.scrollTo("state", anchor: .bottom) }
+                .sheet(isPresented: $showingHistory) {
+                    ConversationHistoryView()
                 }
-                .onAppear { proxy.scrollTo("state", anchor: .bottom) }
-            }
-            .safeAreaInset(edge: .bottom) {
-                Composer(focused: $composerFocused)
-            }
-            .navigationTitle("Assistant")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Historique", systemImage: "clock.arrow.circlepath") { showingHistory = true }
-                        .disabled(services.voice.phase != .idle)
+                .sensoryFeedback(.success, trigger: store.successCount)
+                .task { store.start() }
+        }
+    }
+}
+
+/// A conversation owns its scroll state. Geometry only reports whether the bottom is near;
+/// appending a response never changes a reader's decision to stay higher in the history.
+private struct ConversationTimeline: View {
+    @Environment(AppServices.self) private var services
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var followsLatest = true
+    @State private var userScrolling = false
+
+    private static let bottomId = "assistant-thread-bottom"
+    private var store: AssistantStore { services.assistant }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.xl) {
+                    if store.isEmptyConversation {
+                        EmptyAssistantHint()
+                    }
+                    ForEach(store.entries) { entry in
+                        MessageView(entry: entry)
+                            .id(entry.id)
+                    }
+                    TurnStateView()
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomId)
+                        .accessibilityHidden(true)
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Nouvelle conversation", systemImage: "square.and.pencil") { store.newConversation() }
-                        .disabled(store.pending != nil || store.isBusy || (store.isEmptyConversation && store.draft.isEmpty) || services.voice.phase != .idle)
+                .padding(Spacing.lg)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY <= 60
+            } action: { _, nearBottom in
+                // Content growth can hide the bottom while idle. Only a user's scroll disables following.
+                if userScrolling || nearBottom { followsLatest = nearBottom }
+            }
+            .onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .tracking, .interacting, .decelerating:
+                    userScrolling = true
+                    followsLatest = context.geometry.contentSize.height - context.geometry.visibleRect.maxY <= 60
+                case .idle:
+                    if userScrolling {
+                        followsLatest = context.geometry.contentSize.height - context.geometry.visibleRect.maxY <= 60
+                    }
+                    userScrolling = false
+                case .animating:
+                    userScrolling = false
                 }
             }
-            .sheet(isPresented: $showingHistory) {
-                ConversationHistoryView()
+            .onChange(of: store.entries.map(\.id)) {
+                if followsLatest && !UIAccessibility.isVoiceOverRunning { scrollToLatest(proxy) }
             }
-            .sensoryFeedback(.success, trigger: store.successCount)
-            .task { store.start() }
+            .onChange(of: store.pending?.messageId) { _, messageId in
+                guard messageId != nil else { return }
+                followsLatest = true
+                scrollToLatest(proxy)
+            }
+            .onChange(of: store.phase) { _, phase in
+                // The user's own new request is an explicit reason to return to the end.
+                if phase == .preparing { followsLatest = true }
+                if followsLatest && (phase == .preparing || !UIAccessibility.isVoiceOverRunning) { scrollToLatest(proxy) }
+            }
+            .onChange(of: store.notice) {
+                if followsLatest && !UIAccessibility.isVoiceOverRunning { scrollToLatest(proxy) }
+            }
+            .onAppear { if followsLatest { scrollToLatest(proxy, animated: false) } }
+        }
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        if animated && !reduceMotion {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(Self.bottomId, anchor: .bottom)
         }
     }
 }
@@ -59,10 +120,9 @@ struct AssistantView: View {
 private struct EmptyAssistantHint: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Écris ou dicte ce que tu veux ajouter, déplacer ou retrouver.")
+            Text("Écris ou dicte une demande.")
+                .font(.headline)
             Text("« Demain 17 h, appeler le garage »")
-                .foregroundStyle(.secondary)
-            Text("« Qu’est-ce qu’il me reste aujourd’hui ? »")
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, Spacing.xl)
@@ -74,6 +134,7 @@ private struct EmptyAssistantHint: View {
 private struct MessageView: View {
     let entry: ThreadEntry
     @Environment(AppServices.self) private var services
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmingDelete = false
 
     private var message: ThreadMessage { entry.message }
@@ -81,7 +142,7 @@ private struct MessageView: View {
     var body: some View {
         VStack(alignment: message.isUser ? .trailing : .leading, spacing: Spacing.sm) {
             if message.isUser {
-                userBubble
+                userMessage
             } else {
                 assistantBlock
             }
@@ -103,32 +164,50 @@ private struct MessageView: View {
         }
     }
 
-    private var userBubble: some View {
+    private var userMessage: some View {
         VStack(alignment: .trailing, spacing: Spacing.xs) {
-            if message.kind == "voice" {
-                Label("Vocal", systemImage: "waveform")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             Text(message.text)
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
-                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.medium))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+                .accessibilityLabel((message.kind == "voice" ? "Vous, vocal : " : "Vous : ") + message.text)
             if let original = message.originalTranscript {
                 Text("Transcription d’origine : « \(original) »")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.md) { userMetadata }
+                    .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .trailing, spacing: Spacing.xs) { userMetadata }
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel((message.kind == "voice" ? "Vous, vocal : " : "Vous : ") + message.text)
+        .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 0 : 32)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var userMetadata: some View {
+        Text(message.kind == "voice" ? "Vous · Vocal" : "Vous")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+        if message.kind == "voice", services.assistant.pending == nil {
+            Button("Corriger", systemImage: "pencil") { services.assistant.correct(entry) }
+                .font(.footnote)
+                .frame(minHeight: TouchTarget.comfort)
+        }
     }
 
     @ViewBuilder
     private var assistantBlock: some View {
         let isCard = message.kind == "action_result" || message.kind == "proposal"
         VStack(alignment: .leading, spacing: Spacing.sm) {
+            Text(heading)
+                .font(isCard ? .subheadline.weight(.semibold) : .caption.weight(.medium))
+                .foregroundStyle(isCard ? Color.primary : Color.secondary)
+                .accessibilityAddTraits(.isHeader)
             if message.kind == "error" {
                 Label(message.text, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -151,6 +230,45 @@ private struct MessageView: View {
         }
         .accessibilityElement(children: .contain)
     }
+
+    private var heading: String {
+        switch message.kind {
+        case "action_result": "Résultat"
+        case "proposal": entry.controls?.canConfirm == true ? "À confirmer" : "Proposition"
+        case "clarification": "À préciser"
+        default: "Assistant"
+        }
+    }
+}
+
+/// Native buttons keep their full labels; wide rows become a column before text is compressed.
+private struct ChatActions<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let content: Content
+    let alignment: Alignment
+
+    init(alignment: Alignment = .trailing, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment
+        self.content = content()
+    }
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            column
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.md) { content }
+                    .fixedSize(horizontal: true, vertical: false)
+                column
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
+        }
+    }
+
+    private var column: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
 /// Touchable answers to a question: each is sent as a new message.
@@ -165,6 +283,7 @@ private struct OptionsView: View {
                     Task { await services.assistant.choose(option) }
                 }
                 .buttonStyle(.bordered)
+                .frame(minHeight: TouchTarget.comfort)
                 .disabled(services.assistant.isBusy || services.assistant.pending != nil)
             }
         }
@@ -198,6 +317,7 @@ private struct TurnActionsView: View {
                         Task { await store.undo(actionId: actionId) }
                     }
                     .disabled(busy)
+                    .frame(minHeight: TouchTarget.comfort)
                 }
             } else if let reason = undoReason {
                 Text(reason)
@@ -211,15 +331,16 @@ private struct TurnActionsView: View {
     private var proposalButtons: some View {
         switch controls.proposalState ?? "" {
         case "pending" where controls.canConfirm:
-            HStack {
-                Spacer()
+            ChatActions {
                 Button("Annuler", role: .cancel) {
                     Task { await store.reject(controls) }
                 }
+                .frame(minHeight: TouchTarget.comfort)
                 Button("Confirmer") {
                     Task { await store.confirm(controls, requestText: requestText) }
                 }
                 .buttonStyle(.borderedProminent)
+                .frame(minHeight: TouchTarget.comfort)
             }
             .disabled(busy)
             if let expiresAt = controls.proposalExpiresAt {
@@ -247,13 +368,13 @@ private struct TurnActionsView: View {
     }
 
     private func redo(_ reason: String) -> some View {
-        HStack {
+        ChatActions {
             Text(reason)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Spacer()
             if let requestText {
                 Button("Redemander") { store.draft = requestText }
+                    .frame(minHeight: TouchTarget.comfort)
             }
         }
     }
@@ -284,12 +405,13 @@ private struct TaskLink: View {
                     HStack {
                         Text(task.title)
                             .strikethrough(task.isCompleted)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                         Image(systemName: "chevron.right")
                             .font(.footnote)
                             .foregroundStyle(.tertiary)
                     }
+                    .frame(minHeight: TouchTarget.comfort)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -323,36 +445,43 @@ private struct TurnStateView: View {
             case .preparing:
                 status("Envoi…")
             case .waiting:
-                HStack {
+                ChatActions(alignment: .leading) {
                     status("Compréhension…")
-                    Spacer()
                     Button("Annuler") { Task { await store.cancelTurn() } }
                         .font(.footnote)
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             case .unknown:
                 Text("Résultat inconnu.")
                 Button("Vérifier le résultat") { Task { await store.verify() } }
                     .buttonStyle(.bordered)
+                    .frame(minHeight: TouchTarget.comfort)
             case .offline:
                 Text("L’assistant a besoin du réseau. Ton message est gardé.")
-                HStack {
+                ChatActions(alignment: .leading) {
                     Button("Envoyer") { Task { await store.resend() } }
                         .buttonStyle(.bordered)
+                        .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             case .notReceived:
                 Text("Le serveur n’a pas reçu cette demande.")
-                HStack {
+                ChatActions(alignment: .leading) {
                     Button("Envoyer") { Task { await store.resend() } }
                         .buttonStyle(.bordered)
+                        .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             case .refused:
                 Text("Le message n’a pas été accepté. Il est conservé.")
-                HStack {
+                ChatActions(alignment: .leading) {
                     Button("Réessayer") { Task { await store.resend() } }
                         .buttonStyle(.bordered)
+                        .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             }
             if let notice = store.notice {
@@ -378,20 +507,20 @@ private struct TurnStateView: View {
 private struct Composer: View {
     @FocusState.Binding var focused: Bool
     @Environment(AppServices.self) private var services
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var store: AssistantStore { services.assistant }
 
     var body: some View {
-        @Bindable var store = services.assistant
         VStack(spacing: Spacing.xs) {
             if store.revising != nil {
-                HStack {
+                ChatActions(alignment: .leading) {
                     Label(store.revising?.undoActionId == nil ? "Correction du message" : "Correction : l’action précédente sera annulée",
                           systemImage: "pencil")
                         .font(.footnote)
-                    Spacer()
                     Button("Annuler la correction") { store.cancelCorrection() }
                         .font(.footnote)
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             }
             VoiceDraftBar()
@@ -403,30 +532,56 @@ private struct Composer: View {
             }
             if services.voice.phase == .recording {
                 VoiceRecorderBar()
+            } else if services.voice.phase == .finishing {
+                HStack(spacing: Spacing.sm) {
+                    ProgressView()
+                    Text("Finalisation du vocal…")
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, minHeight: TouchTarget.comfort, alignment: .leading)
+                .accessibilityElement(children: .combine)
+            } else if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .trailing, spacing: Spacing.xs) {
+                    messageField
+                    HStack(spacing: Spacing.sm) { captureAndSend }
+                }
             } else {
                 HStack(alignment: .bottom, spacing: Spacing.sm) {
-                    TextField("Message…", text: $store.draft, axis: .vertical)
-                        .lineLimit(1...6)
-                        .focused($focused)
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, Spacing.sm)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: Radius.medium))
-                    VoiceButton()
-                    Button {
-                        Task { await store.send() }
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title)
-                            .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
-                    }
-                    .disabled(!store.canSend || services.voice.isWorking)
-                    .accessibilityLabel("Envoyer")
+                    messageField
+                    captureAndSend
                 }
             }
         }
         .padding(.horizontal, Spacing.lg)
         .padding(.vertical, Spacing.sm)
         .background(.bar)
+    }
+
+    private var messageField: some View {
+        @Bindable var store = services.assistant
+        return TextField("Message…", text: $store.draft, axis: .vertical)
+            .lineLimit(1...5)
+            .focused($focused)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .frame(minHeight: TouchTarget.comfort)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: Radius.medium))
+            .accessibilityLabel("Message à l’assistant")
+    }
+
+    @ViewBuilder
+    private var captureAndSend: some View {
+        if services.voice.draft == nil { VoiceButton() }
+        Button {
+            Task { await store.send() }
+        } label: {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.title2)
+                .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+        }
+        .disabled(!store.canSend || services.voice.isWorking)
+        .accessibilityLabel("Envoyer")
     }
 }
 

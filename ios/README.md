@@ -6,6 +6,12 @@ App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ;
 
 Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'envoi et de transcription et permet de mettre l'attente en pause. Il récupère le résultat par GET avant tout nouvel envoi et conserve le texte jusqu'à sa remise durable à l'assistant. Les tests de reprise s'exécutent dans le workflow iOS ; la capture au microphone et les interruptions demandent encore un essai sur l'iPhone.
 
+## Capture rapide
+
+Le petit **+** près de la barre d'onglets ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Après verrouillage, retirez le doigt puis utilisez Arrêter ou Annuler. Un relâchement sans verrouillage arrête aussi l'enregistrement.
+
+L'arrêt conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
+
 ## Exporter les données locales
 
 Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. L'import et la récupération guidée après restauration restent à livrer.
