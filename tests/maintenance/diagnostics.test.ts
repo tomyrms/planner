@@ -46,8 +46,20 @@ describe('GET /api/v1/diagnostics', () => {
     const user = (await db.pool.query<{ user_id: string }>('SELECT user_id FROM devices WHERE id = $1', [tokens.deviceId])).rows[0]!.user_id;
     await db.pool.query(
       `INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, created_at)
-       VALUES (gen_random_uuid(), $1, 'erased', 90000, 100, $2, 2, $3), (gen_random_uuid(), $1, 'erased', 90000, 100, $2, 1, '2026-08-31T23:00:00Z')`,
+       VALUES (gen_random_uuid(), $1, 'erased', 90000, 100, $2, 2, $3), (gen_random_uuid(), $1, 'erased', 90000, 100, $2, 4, '2026-08-31T23:00:00Z')`,
       [user, 'b'.repeat(64), now]);
+    await db.pool.query(`INSERT INTO transcription_attempts
+      (transcription_id, attempt, user_id, duration_ms, state, reserved_at, budget_at, dispatched_at)
+      SELECT t.id, n.attempt, t.user_id, t.duration_ms, 'dispatched', t.created_at, t.created_at, t.created_at
+      FROM transcriptions t CROSS JOIN LATERAL generate_series(1, t.attempts) AS n(attempt) WHERE t.user_id = $1`, [user]);
+    // This recording was created in August, retried in September, then again in October.
+    // Diagnostics counts only the September attempt; a released reservation contributes nothing.
+    await db.pool.query(`UPDATE transcription_attempts a SET budget_at = $2, dispatched_at = $2
+      FROM transcriptions t WHERE a.transcription_id = t.id AND t.user_id = $1 AND t.attempts = 4 AND a.attempt = 2`, [user, now]);
+    await db.pool.query(`UPDATE transcription_attempts a SET budget_at = '2026-10-01T00:00:00Z', dispatched_at = '2026-10-01T00:00:00Z'
+      FROM transcriptions t WHERE a.transcription_id = t.id AND t.user_id = $1 AND t.attempts = 4 AND a.attempt = 3`, [user]);
+    await db.pool.query(`UPDATE transcription_attempts a SET state = 'released', reserved_at = $2, budget_at = $2, dispatched_at = NULL, released_at = $2
+      FROM transcriptions t WHERE a.transcription_id = t.id AND t.user_id = $1 AND t.attempts = 4 AND a.attempt = 4`, [user, now]);
     await db.pool.query(
       `INSERT INTO maintenance_runs (kind, outcome, finished_at) VALUES
        ('backup', 'succeeded', '2026-09-16T02:00:00Z'), ('backup', 'succeeded', '2026-09-17T02:00:00Z'),
@@ -67,7 +79,7 @@ describe('GET /api/v1/diagnostics', () => {
       sync: '-',
       replicationLagBytes: '-',
       assistant: { status: 'configured', provider: 'deepseek', model: 'deepseek-test', monthTokens: 0, monthTokenBudget: 1000 },
-      transcription: { status: 'disabled', provider: null, model: null, monthMinutes: 3, monthMinuteBudget: 600 },
+      transcription: { status: 'disabled', provider: null, model: null, monthMinutes: 4.5, monthMinuteBudget: 600 },
       maintenance: {
         backup: { lastSucceededAt: '2026-09-17T02:00:00.000Z', lastFailedAt: null },
         backupVerify: { lastSucceededAt: null, lastFailedAt: '2026-09-17T02:05:00.000Z' },

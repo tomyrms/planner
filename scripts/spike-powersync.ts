@@ -25,12 +25,12 @@ const CLIENT_VERSION = `${config.minimumClientVersion} (build 1)`;
 // Client schema: the synced columns of powersync/sync-config.yaml, plus the local queue tables.
 const { text, integer, real } = column;
 const schema = new Schema({
-  projects: new Table({ name: text, color_key: text, sort_order: real, archived_at: text, deleted_at: text, revision: integer, created_at: text, updated_at: text }),
+  projects: new Table({ name: text, color_key: text, sort_order: real, archived_at: text, deleted_at: text, deleted_by_command_id: text, revision: integer, created_at: text, updated_at: text }),
   tasks: new Table({
     project_id: text, title: text, notes: text, priority: text, status: text, completed_at: text,
     scheduled_date: text, scheduled_time: text, scheduled_time_zone: text, scheduled_start_at: text, duration_minutes: integer,
     deadline_date: text, deadline_time: text, deadline_time_zone: text, deadline_at: text,
-    recurrence: text, subtasks: text, missed_ignored_before: text, search_text: text, deleted_at: text, revision: integer, created_at: text, updated_at: text,
+    recurrence: text, subtasks: text, missed_ignored_before: text, search_text: text, deleted_at: text, deleted_by_command_id: text, revision: integer, created_at: text, updated_at: text,
   }),
   tags: new Table({ name: text, normalized_name: text, revision: integer, deleted_at: text, created_at: text, updated_at: text }),
   task_tags: new Table({ task_id: text, tag_id: text, deleted_at: text, created_at: text, updated_at: text }),
@@ -183,6 +183,7 @@ let db: AbstractPowerSyncDatabase | undefined;
 let deviceId: string | undefined;
 let originalGeneration: string | undefined;
 let detailFixture: { userId: string; taskId: string; tagId: string } | undefined;
+let projectFixture: { userId: string; projectId: string } | undefined;
 const started = Date.now();
 
 try {
@@ -291,6 +292,34 @@ try {
   check('détails', 'suppression du tag, du lien et de la tâche répliquée sans perte des lignes', true);
   detailFixture = undefined;
 
+  // List restoration relies on the deletion provenance reaching the phone for each member.
+  const projectId = randomUUID(), memberId = randomUUID(), priorTrashId = randomUUID();
+  projectFixture = { userId, projectId };
+  await requireApplied(newCommand('project.create', projectId, { name: '[spike] liste restaurable' }));
+  for (const id of [memberId, priorTrashId]) {
+    await requireApplied(newCommand('task.create', id, { title: '[spike] membre', projectId }));
+  }
+  const priorDelete = newCommand('task.delete', priorTrashId, {});
+  await requireApplied(priorDelete);
+  const deleteProject = newCommand('project.delete', projectId, { taskPolicy: 'trash_tasks_with_project' }, { precondition: { kind: 'revision', revision: 1 } });
+  await requireApplied(deleteProject);
+  await waitFor('list deletion provenance replicated', async () => {
+    const project = await localDb.getOptional<{ deleted_by_command_id: string }>('SELECT deleted_by_command_id FROM projects WHERE id = ?', [projectId]);
+    const member = await localDb.getOptional<{ deleted_by_command_id: string }>('SELECT deleted_by_command_id FROM tasks WHERE id = ?', [memberId]);
+    const earlier = await localDb.getOptional<{ deleted_by_command_id: string }>('SELECT deleted_by_command_id FROM tasks WHERE id = ?', [priorTrashId]);
+    return project?.deleted_by_command_id === deleteProject.clientCommandId && member?.deleted_by_command_id === deleteProject.clientCommandId && earlier?.deleted_by_command_id === priorDelete.clientCommandId;
+  });
+  const restoreProject = newCommand('project.restore', projectId, {}, { precondition: { kind: 'afterCommand', clientCommandId: deleteProject.clientCommandId } });
+  await requireApplied(restoreProject);
+  await requireApplied(newCommand('task.patch', memberId, { set: { title: '[spike] après restauration' } }, { precondition: { kind: 'afterCommand', clientCommandId: restoreProject.clientCommandId } }));
+  await waitFor('restored member and independent trash replicated', async () => {
+    const member = await localTask(memberId), earlier = await localTask(priorTrashId);
+    return member?.title === '[spike] après restauration' && member.deleted_at === null && earlier?.deleted_at != null;
+  });
+  check('listes', 'provenance répliquée, restauration sélective et dépendance vers le reçu de liste', true);
+  await requireApplied(newCommand('project.delete', projectId, { taskPolicy: 'trash_tasks_with_project' }, { precondition: { kind: 'afterCommand', clientCommandId: restoreProject.clientCommandId } }));
+  projectFixture = undefined;
+
   // Local flow: optimistic projection, upload, server state replaces the projection.
   const localTaskId = randomUUID();
   created.push(localTaskId);
@@ -384,6 +413,12 @@ try {
 } catch (error) {
   check('spike', 'exécution', false, error instanceof Error ? error.message : 'erreur inconnue');
 } finally {
+  if (projectFixture) {
+    const { userId, projectId } = projectFixture;
+    const stored = await apiPool.query<{ revision: string }>('SELECT revision FROM projects WHERE id = $1', [projectId]);
+    if (stored.rows[0]) await executeCommand(apiPool, { userId, deviceId: null, origin: 'manual' },
+      newCommand('project.delete', projectId, { taskPolicy: 'trash_tasks_with_project' }, { precondition: { kind: 'revision', revision: Number(stored.rows[0].revision) } })).catch(() => undefined);
+  }
   if (detailFixture) {
     const { userId, taskId, tagId } = detailFixture;
     const actor = { userId, deviceId: null, origin: 'manual' as const };

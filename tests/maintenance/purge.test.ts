@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { purgeExpired, purgeIfDue } from '../../src/modules/maintenance/index.js';
 import type { CommandActor } from '../../src/modules/sync/index.js';
 import { createTestDatabase } from '../db/helpers.js';
+import { monthlyVoiceMilliseconds } from '../../src/modules/voice/usage.js';
 import { atRevision, command, commandRunner } from '../sync/helpers.js';
 
 const DAY = 86_400_000;
@@ -145,6 +146,23 @@ describe('daily purge (03_Data_Model.md §8)', () => {
     expect(await purgeIfDue(db.pool, new Date(now.getTime() + DAY - 1))).toBeNull();
     expect(await purgeIfDue(db.pool, new Date(now.getTime() + DAY))).not.toBeNull();
     expect(await count("SELECT count(*) AS n FROM maintenance_runs WHERE kind = 'purge' AND outcome = 'succeeded'", [])).toBe(2);
+  });
+
+  it('keeps a recent voice attempt on an old recording so purge cannot refund this month', async () => {
+    const id = randomUUID();
+    await db.pool.query(`INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, created_at)
+      VALUES ($1, $2, 'erased', 3000, 100, $3, 2, $4)`, [id, actor.userId, 'b'.repeat(64), new Date(now.getTime() - 120 * DAY)]);
+    await db.pool.query(`INSERT INTO transcription_attempts (transcription_id, attempt, user_id, duration_ms, state, reserved_at, budget_at, dispatched_at)
+      VALUES ($1, 1, $2, 3000, 'legacy', $3, $3, NULL), ($1, 2, $2, 3000, 'dispatched', $4, $4, $4)`,
+    [id, actor.userId, new Date(now.getTime() - 120 * DAY), now]);
+    expect(await monthlyVoiceMilliseconds(db.pool, actor.userId, now)).toBe(3000);
+    expect(await purgeExpired(db.pool, now)).toMatchObject({ transcriptions: 0 });
+    expect(await monthlyVoiceMilliseconds(db.pool, actor.userId, now)).toBe(3000);
+    expect(await count('SELECT count(*) AS n FROM transcription_attempts WHERE transcription_id = $1', [id])).toBe(2);
+
+    now = new Date(now.getTime() + 91 * DAY);
+    expect(await purgeExpired(db.pool, now)).toMatchObject({ transcriptions: 1 });
+    expect(await count('SELECT count(*) AS n FROM transcription_attempts WHERE transcription_id = $1', [id])).toBe(0);
   });
 
   it('rechecks the daily schedule under the database lock when two processes start together', async () => {

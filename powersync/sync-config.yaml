@@ -10,13 +10,13 @@ streams:
     auto_subscribe: true
     queries:
       - >-
-        SELECT id, name, color_key, sort_order, archived_at, deleted_at, revision, created_at, updated_at
+        SELECT id, name, color_key, sort_order, archived_at, deleted_at, deleted_by_command_id, revision, created_at, updated_at
         FROM projects WHERE user_id = auth.user_id()
       - >-
         SELECT id, project_id, title, notes, priority, status, completed_at,
                scheduled_date, scheduled_time, scheduled_time_zone, scheduled_start_at, duration_minutes,
                deadline_date, deadline_time, deadline_time_zone, deadline_at,
-               recurrence, subtasks, missed_ignored_before, search_text, deleted_at, revision, created_at, updated_at
+               recurrence, subtasks, missed_ignored_before, search_text, deleted_at, deleted_by_command_id, revision, created_at, updated_at
         FROM tasks WHERE user_id = auth.user_id()
       - >-
         SELECT id, name, normalized_name, revision, deleted_at, created_at, updated_at

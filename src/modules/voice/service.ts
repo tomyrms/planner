@@ -5,6 +5,7 @@ import type pg from 'pg';
 import { AssistantError, type Identity } from '../assistant/index.js';
 import { AudioRejected, inspectM4a } from './m4a.js';
 import { TranscriptionError, type TranscriptionProvider } from './provider.js';
+import { monthlyVoiceMilliseconds } from './usage.js';
 
 export const DEFAULT_VOICE_LIMITS = {
   /** 04_Backend/06_Security_Privacy.md: 30 transcriptions per hour. */
@@ -57,6 +58,15 @@ async function lockTranscription(client: pg.PoolClient, id: string): Promise<voi
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:transcription:' || $1::uuid::text, 0))", [id]);
 }
 
+async function lockBudget(client: pg.PoolClient, userId: string): Promise<void> {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:voice-budget:' || $1::uuid::text, 0))", [userId]);
+}
+
+async function releaseReservation(client: pg.PoolClient | pg.Pool, id: string, attempt: number, now: Date): Promise<void> {
+  await client.query(`UPDATE transcription_attempts SET state = 'released', released_at = $3
+    WHERE transcription_id = $1 AND attempt = $2 AND state = 'reserved'`, [id, attempt, now]);
+}
+
 /** Voice messages (03_iOS/04_Audio_Transcription.md): the text is kept, the audio never is. */
 export class VoiceService {
   private readonly jobs = new Map<string, Job>();
@@ -102,6 +112,7 @@ export class VoiceService {
         const { rows: [interrupted] } = await client.query(`UPDATE transcriptions SET status = 'failed', error_code = 'INTERRUPTED', updated_at = $3
           WHERE id = $1 AND user_id = $2 AND status = ANY($4) AND updated_at <= $3::timestamptz - make_interval(secs => $5)
           RETURNING attempts`, [id, userId, now, OPEN_STATUSES, this.limits.staleMs / 1000]);
+        if (interrupted) await releaseReservation(client, id, interrupted.attempts as number, now);
         return interrupted?.attempts as number | undefined;
       });
       if (attempt !== undefined) await this.deleteAudio(id, attempt).catch((error) => {
@@ -139,11 +150,11 @@ export class VoiceService {
         }
         throw error;
       }
-      const now = this.clock();
       const decision = await transaction(this.pool, async (client) => {
         // Reserve the budget before releasing this lock: simultaneous uploads must see one another's attempts.
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:voice-budget:' || $1::uuid::text, 0))", [identity.userId]);
+        await lockBudget(client, identity.userId);
         await lockTranscription(client, id);
+        const now = this.clock();
         const { rows: [existing] } = await client.query('SELECT user_id, audio_sha256, duration_ms, status, attempts, updated_at FROM transcriptions WHERE id = $1', [id]);
         if (existing) {
           if (existing.user_id !== identity.userId || existing.audio_sha256 !== upload.sha256 || existing.duration_ms !== upload.durationMs) {
@@ -157,6 +168,8 @@ export class VoiceService {
           if (existing.attempts >= this.limits.maxAttempts) {
             throw new AssistantError('TRANSCRIPTION_FAILED', 422, 'Transcription failed; write the message instead.');
           }
+          // A stale reservation never crossed the provider boundary. A dispatched attempt is never refunded.
+          await releaseReservation(client, id, existing.attempts as number, now);
           await this.checkBudget(client, identity.userId, upload.durationMs, now);
           await client.query(`UPDATE transcriptions SET status = 'received', attempts = attempts + 1, error_code = NULL, audio_deleted_at = NULL, updated_at = $2
             WHERE id = $1`, [id, now]);
@@ -173,11 +186,15 @@ export class VoiceService {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $9)`,
           [id, identity.userId, identity.deviceId, upload.durationMs, upload.byteSize, upload.sha256, this.provider!.name, this.provider!.model, now]);
         }
+        const attempt = Number(existing?.attempts ?? 0) + 1;
+        await client.query(`INSERT INTO transcription_attempts
+          (transcription_id, attempt, user_id, duration_ms, state, reserved_at, budget_at)
+          VALUES ($1, $2, $3, $4, 'reserved', $5, $5)`, [id, attempt, identity.userId, upload.durationMs, now]);
         // Keep the identifier locked until its file is in place. A duplicate must never replace an active recording.
         await rename(upload.path, this.audioPath(id));
         keepTemporary = true;
         await chmod(this.audioPath(id), 0o600).catch(() => undefined);
-        return Number(existing?.attempts ?? 0) + 1;
+        return attempt;
       });
       if (decision !== null) this.start(identity.userId, id, decision);
       const job = this.jobs.get(id);
@@ -188,13 +205,33 @@ export class VoiceService {
     }
   }
 
-  /** Every call to the provider is billed, retries included (04_Backend/07_Cost_Model.md). */
-  private async checkBudget(client: pg.PoolClient, userId: string, durationMs: number, now: Date): Promise<void> {
-    const month = await client.query(`SELECT COALESCE(sum(duration_ms::bigint * attempts), 0)::bigint AS total FROM transcriptions
-      WHERE user_id = $1 AND created_at >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, [userId, now]);
-    if (Number(month.rows[0].total) + durationMs > this.limits.monthlyMinutes * 60_000) {
+  /** Every dispatched attempt consumes the allowance, retries included (04_Backend/07_Cost_Model.md). */
+  private async checkBudget(client: pg.PoolClient, userId: string, durationMs: number, now: Date,
+    excluding?: { transcriptionId: string; attempt: number }): Promise<void> {
+    if (await monthlyVoiceMilliseconds(client, userId, now, excluding) + durationMs > this.limits.monthlyMinutes * 60_000) {
       throw new AssistantError('TRANSCRIPTION_BUDGET_EXCEEDED', 429, 'The monthly transcription budget is used up.');
     }
+  }
+
+  /** Called by the provider after local preparation and immediately before its HTTP request.
+   * The durable mark precedes network I/O: a crash in that narrow gap stays counted conservatively. */
+  private async dispatchAttempt(userId: string, id: string, attempt: number, signal: AbortSignal): Promise<void> {
+    await transaction(this.pool, async (client) => {
+      await lockBudget(client, userId);
+      await lockTranscription(client, id);
+      const { rows: [row] } = await client.query(`SELECT t.status, t.attempts, a.duration_ms, a.state
+        FROM transcriptions t JOIN transcription_attempts a ON a.transcription_id = t.id AND a.attempt = $3
+        WHERE t.id = $1 AND t.user_id = $2 FOR UPDATE OF t, a`, [id, userId, attempt]);
+      if (signal.aborted) throw new TranscriptionError('TRANSCRIPTION_TIMEOUT');
+      if (!row || row.status !== 'transcribing' || row.attempts !== attempt || row.state !== 'reserved') {
+        throw new TranscriptionError('TRANSCRIPTION_REJECTED');
+      }
+      const now = this.clock();
+      await this.checkBudget(client, userId, row.duration_ms as number, now, { transcriptionId: id, attempt });
+      await client.query(`UPDATE transcription_attempts SET state = 'dispatched', budget_at = $3, dispatched_at = $3
+        WHERE transcription_id = $1 AND attempt = $2`, [id, attempt, now]);
+      await client.query('UPDATE transcriptions SET updated_at = $2 WHERE id = $1', [id, now]);
+    });
   }
 
   private start(userId: string, id: string, attempt: number): void {
@@ -217,21 +254,24 @@ export class VoiceService {
       WHERE id = $1 AND status = 'received' AND attempts = $3 AND attempts <= $4 RETURNING id`, [id, this.clock(), attempt, this.limits.maxAttempts]);
     if (!claimed.rowCount) return;
     let outcome: { status: 'completed' | 'failed'; text?: string; languages?: string[]; code?: string } = { status: 'failed', code: 'INTERNAL_ERROR' };
+    const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(this.limits.providerTimeoutMs)]);
     try {
       const result = await this.provider!.transcribe({
         audioPath: this.audioPath(id), languages: LANGUAGE_HINTS, keywords: await this.keywords(userId),
-        signal: AbortSignal.any([signal, AbortSignal.timeout(this.limits.providerTimeoutMs)]),
+        signal: providerSignal,
+        beforeSend: () => this.dispatchAttempt(userId, id, attempt, providerSignal),
       });
       const text = result.text.trim().slice(0, 8000);
       // Silence or an empty transcript never becomes a message (03_iOS/04_Audio_Transcription.md).
       outcome = text.length === 0 ? { status: 'failed', code: 'EMPTY_TRANSCRIPT' } : { status: 'completed', text, languages: result.languages };
     } catch (error) {
-      outcome = { status: 'failed', code: error instanceof TranscriptionError ? error.code : 'INTERNAL_ERROR' };
+      outcome = { status: 'failed', code: error instanceof TranscriptionError || (error instanceof AssistantError && error.code === 'TRANSCRIPTION_BUDGET_EXCEEDED') ? error.code : 'INTERNAL_ERROR' };
     }
     // Persist the result before deleting its source. A disk cleanup error must not lose a completed transcript.
     await transaction(this.pool, async (client) => {
       await lockTranscription(client, id);
       const now = this.clock();
+      await releaseReservation(client, id, attempt, now);
       // An abandon or a later attempt wins; a delayed result cannot overwrite either.
       await client.query(`UPDATE transcriptions SET
           status = CASE WHEN status = 'transcribing' THEN $2 ELSE status END,
@@ -268,6 +308,7 @@ export class VoiceService {
       if (!row || row.status === 'erased') throw new AssistantError('TRANSCRIPTION_NOT_FOUND', 404, 'Unknown transcription.');
       await client.query(`UPDATE transcriptions SET status = CASE WHEN status = 'completed' THEN status ELSE 'abandoned' END,
         updated_at = CASE WHEN status = 'completed' THEN updated_at ELSE $2 END WHERE id = $1`, [id, this.clock()]);
+      await releaseReservation(client, id, row.attempts as number, this.clock());
       return row.attempts as number;
     });
     const job = this.jobs.get(id);
@@ -281,8 +322,12 @@ export class VoiceService {
   async cleanup(): Promise<{ files: number; interrupted: number; erased: number }> {
     const now = this.clock();
     const interrupted = await this.pool.query(`UPDATE transcriptions SET status = 'failed', error_code = 'INTERRUPTED', updated_at = $1
-      WHERE status = ANY($2) AND updated_at < $1::timestamptz - make_interval(secs => $3) AND NOT (id = ANY($4::uuid[])) RETURNING id`,
+      WHERE status = ANY($2) AND updated_at < $1::timestamptz - make_interval(secs => $3) AND NOT (id = ANY($4::uuid[])) RETURNING id, attempts`,
     [now, OPEN_STATUSES, this.limits.staleMs / 1000, [...this.jobs.keys()]]);
+    // Also repairs a crash between marking an interruption and releasing its reservation.
+    await this.pool.query(`UPDATE transcription_attempts a SET state = 'released', released_at = $1
+      FROM transcriptions t WHERE a.transcription_id = t.id AND a.state = 'reserved'
+        AND (a.attempt < t.attempts OR NOT (t.status = ANY($2)))`, [now, OPEN_STATUSES]);
     const erased = await this.pool.query(`UPDATE transcriptions t SET status = 'erased', text = NULL, languages = '{}', completed_at = NULL, error_code = NULL
       WHERE t.status IN ('completed','failed','abandoned') AND t.updated_at < $1::timestamptz - make_interval(secs => $2)
         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.transcription_id = t.id)`, [now, this.limits.audioTtlMs / 1000]);

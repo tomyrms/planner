@@ -6,7 +6,7 @@ const audioPath = fileURLToPath(new URL('../fixtures/audio/tone-3s-mono.m4a', im
 const KEY = 'sk-test-secret-value';
 
 function request(overrides: Partial<TranscriptionRequest> = {}): TranscriptionRequest {
-  return { audioPath, languages: ['fr', 'pt', 'en'], keywords: ['C#', 'Maison'], signal: new AbortController().signal, ...overrides };
+  return { audioPath, languages: ['fr', 'pt', 'en'], keywords: ['C#', 'Maison'], signal: new AbortController().signal, beforeSend: async () => {}, ...overrides };
 }
 
 function providerWith(respond: (url: string, init: RequestInit) => Promise<Response>) {
@@ -55,6 +55,38 @@ describe('OpenAI transcription adapter', () => {
   it('accepts the older single-language shape and a response without usage', async () => {
     const { provider } = providerWith(async () => Response.json({ text: 'Olá', language: 'pt' }));
     expect(await provider.transcribe(request({ keywords: [] }))).toEqual({ text: 'Olá', languages: ['pt'], seconds: null });
+  });
+
+  it('awaits durable dispatch authorization before any HTTP and preserves its rejection', async () => {
+    const { provider, calls } = providerWith(async () => Response.json({ text: 'Autorisé.' }));
+    let authorize!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { authorize = resolve; });
+    const pending = provider.transcribe(request({ beforeSend: async () => { entered(); await gate; } }));
+    try {
+      await waiting;
+      expect(calls).toHaveLength(0);
+      authorize();
+      expect(await pending).toMatchObject({ text: 'Autorisé.' });
+      expect(calls).toHaveLength(1);
+    } finally { authorize(); }
+
+    const blocked = providerWith(async () => Response.json({ text: 'Jamais envoyé.' }));
+    const budgetError = new Error('TRANSCRIPTION_BUDGET_EXCEEDED');
+    await expect(blocked.provider.transcribe(request({ beforeSend: async () => { throw budgetError; } }))).rejects.toBe(budgetError);
+    expect(blocked.calls).toHaveLength(0);
+  });
+
+  it('does not authorize dispatch when local preparation fails or the request was already cancelled', async () => {
+    const { provider, calls } = providerWith(async () => Response.json({ text: 'Jamais envoyé.' }));
+    let authorized = 0;
+    const beforeSend = async () => { authorized++; };
+    await expect(provider.transcribe(request({ audioPath: `${audioPath}.missing`, beforeSend }))).rejects.toThrow();
+    const signal = AbortSignal.abort();
+    expect((await failure(provider.transcribe(request({ signal, beforeSend })))).code).toBe('TRANSCRIPTION_TIMEOUT');
+    expect(authorized).toBe(0);
+    expect(calls).toHaveLength(0);
   });
 
   it('maps provider failures to stable codes without leaking the key or the body', async () => {

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
+import { monthlyVoiceMilliseconds } from '../voice/usage.js';
 import { AuthError, type AuthService } from '../auth/index.js';
 
 export interface DescribedProvider {
@@ -85,9 +86,7 @@ export async function readDiagnostics(options: DiagnosticsRouteOptions, userId: 
   const tokens = await pool.query<{ total: string }>(
     `SELECT COALESCE(sum(input_tokens + output_tokens), 0)::bigint AS total FROM assistant_turns WHERE user_id = $1 AND created_at >= ${month}`,
     [userId, at]);
-  const audio = await pool.query<{ total: string }>(
-    `SELECT COALESCE(sum(duration_ms::bigint * attempts), 0)::bigint AS total FROM transcriptions WHERE user_id = $1 AND created_at >= ${month}`,
-    [userId, at]);
+  const audioMilliseconds = await monthlyVoiceMilliseconds(pool, userId, at);
   const maintenance = Object.fromEntries(MAINTENANCE_KINDS.map((kind) => {
     const find = (outcome: 'succeeded' | 'failed') => {
       const row = runs.rows.find((run) => run.kind === kind && run.outcome === outcome);
@@ -108,7 +107,7 @@ export async function readDiagnostics(options: DiagnosticsRouteOptions, userId: 
     },
     transcription: {
       ...describe(options.transcription.provider),
-      monthMinutes: Math.round(Number(audio.rows[0]!.total) / 600) / 100,
+      monthMinutes: Math.round(audioMilliseconds / 600) / 100,
       monthMinuteBudget: options.transcription.monthlyMinutes,
     },
     maintenance,

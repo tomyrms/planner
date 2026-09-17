@@ -74,10 +74,13 @@ async function runPurge(pool: pg.Pool, now: Date, limits: PurgeLimits, onlyIfDue
 
     // Also finds actions whose aggregate was purged earlier and whose conversation was deleted since.
     const aiActions = await removeOrphanJournal(client);
-    // The monthly budget only reads the current month; a row a message still points to stays.
+    // A retry can be recent even when the recording is old. Cascading its ledger must never refund
+    // a current-month attempt. Keep at least 90 days after the last reservation/dispatch too.
     const transcriptions = (await client.query(
       `DELETE FROM transcriptions t
         WHERE t.created_at < $1 AND t.status IN ('erased','failed','abandoned')
+          AND NOT EXISTS (SELECT 1 FROM transcription_attempts a WHERE a.transcription_id = t.id
+            AND (a.reserved_at >= $1 OR a.budget_at >= $1))
           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.user_id = t.user_id AND m.transcription_id = t.id)`,
       [transcriptionsBefore])).rowCount ?? 0;
 

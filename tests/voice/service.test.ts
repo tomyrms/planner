@@ -12,6 +12,7 @@ import {
 } from '../../src/modules/voice/index.js';
 import { assistantFor, manual, turnRequest } from '../assistant/helpers.js';
 import { createTestDatabase } from '../db/helpers.js';
+import { monthlyVoiceMilliseconds } from '../../src/modules/voice/usage.js';
 
 const mono = await readFile(new URL('../fixtures/audio/tone-3s-mono.m4a', import.meta.url));
 const stereo = await readFile(new URL('../fixtures/audio/tone-3s-stereo.m4a', import.meta.url));
@@ -247,7 +248,9 @@ describe('voice transcription service', () => {
       for (const result of failures) {
         expect(result.reason).toMatchObject({ code: 'perHour' in limits ? 'RATE_LIMITED' : 'TRANSCRIPTION_BUDGET_EXCEEDED', statusCode: 429 });
       }
+      await eventually(async () => provider.requests.length === 1);
       expect(provider.requests).toHaveLength(1);
+      expect((await db.pool.query('SELECT count(*)::int AS n FROM transcription_attempts WHERE user_id = $1', [me.userId])).rows[0].n).toBe(1);
     }
   });
 
@@ -340,6 +343,104 @@ describe('voice transcription service', () => {
     // A new month (UTC) starts a new budget.
     now = new Date('2026-10-01T00:00:01Z');
     expect((await send(budget.service, other, { id: failed.id })).snapshot).toMatchObject({ status: 'failed', errorCode: 'TRANSCRIPTION_UNAVAILABLE' });
+    expect(await monthlyVoiceMilliseconds(db.pool, other.userId, new Date('2026-09-01T00:00:00Z'))).toBe(6000);
+    expect(await monthlyVoiceMilliseconds(db.pool, other.userId, now)).toBe(3000);
+    // The retry belongs to October even though the recording was first created in September.
+    expect((await send(budget.service, other)).snapshot.status).toBe('failed');
+    expect(await monthlyVoiceMilliseconds(db.pool, other.userId, now)).toBe(6000);
+    expect(await failure(send(budget.service, other))).toMatchObject({ code: 'TRANSCRIPTION_BUDGET_EXCEEDED' });
+  });
+
+  it.each([false, true])('rechecks the actual dispatch month before HTTP (destination budget full: %s)', async (full) => {
+    const me = await freshUser();
+    const september = new Date('2026-09-30T23:59:59Z');
+    let now = september;
+    let preparing = false;
+    let sent = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider: TranscriptionProvider = {
+      name: 'scripted', model: 'preparation-gate',
+      async transcribe(request) {
+        preparing = true;
+        await gate;
+        await request.beforeSend();
+        sent++;
+        return said('Envoyé dans le nouveau mois.');
+      },
+    };
+    const { service } = await voiceFor(provider, { clock: () => now, limits: { monthlyMinutes: 0.05, inlineWaitMs: 10 } });
+    try {
+      const pending = await send(service, me);
+      await eventually(async () => preparing);
+      expect(await monthlyVoiceMilliseconds(db.pool, me.userId, september)).toBe(3000);
+      expect(sent).toBe(0);
+      now = new Date('2026-10-01T00:00:00Z');
+      if (full) {
+        const peer = await voiceFor(new ScriptedTranscriptionProvider([said('Budget déjà utilisé.')]), { clock: () => now, limits: { monthlyMinutes: 0.05 } });
+        expect((await send(peer.service, me)).snapshot.status).toBe('completed');
+      }
+      release();
+      await eventually(async () => (await row(pending.id))?.status === (full ? 'failed' : 'completed'));
+      expect(sent).toBe(full ? 0 : 1);
+      expect(await monthlyVoiceMilliseconds(db.pool, me.userId, september)).toBe(0);
+      expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(3000);
+      const attempt = (await db.pool.query('SELECT state, reserved_at, budget_at, dispatched_at FROM transcription_attempts WHERE transcription_id = $1', [pending.id])).rows[0];
+      expect(attempt).toEqual({ state: full ? 'released' : 'dispatched', reserved_at: september, budget_at: full ? september : now, dispatched_at: full ? null : now });
+      if (full) expect(await row(pending.id)).toMatchObject({ attempts: 1, error_code: 'TRANSCRIPTION_BUDGET_EXCEEDED' });
+    } finally { release(); }
+  });
+
+  it('releases a local failure before HTTP but counts an uncertain failure after dispatch', async () => {
+    const me = await freshUser();
+    let prepared = 0;
+    let sent = 0;
+    const provider: TranscriptionProvider = {
+      name: 'scripted', model: 'local-failure',
+      async transcribe(request) {
+        if (++prepared === 1) throw new Error('local preparation failed');
+        await request.beforeSend();
+        sent++;
+        throw new TranscriptionError('TRANSCRIPTION_UNAVAILABLE');
+      },
+    };
+    const now = new Date('2026-10-01T00:00:00Z');
+    const { service } = await voiceFor(provider, { clock: () => now, limits: { monthlyMinutes: 0.05 } });
+    const first = await send(service, me);
+    expect(first.snapshot).toMatchObject({ status: 'failed', errorCode: 'INTERNAL_ERROR' });
+    expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(0);
+    expect((await send(service, me, { id: first.id })).snapshot).toMatchObject({ status: 'failed', errorCode: 'TRANSCRIPTION_UNAVAILABLE' });
+    expect(sent).toBe(1);
+    expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(3000);
+    await service.abandon(me, first.id);
+    await service.cleanup();
+    expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(3000);
+    expect(await failure(send(service, me))).toMatchObject({ code: 'TRANSCRIPTION_BUDGET_EXCEEDED' });
+    expect((await db.pool.query('SELECT attempt, state FROM transcription_attempts WHERE transcription_id = $1 ORDER BY attempt', [first.id])).rows)
+      .toEqual([{ attempt: 1, state: 'released' }, { attempt: 2, state: 'dispatched' }]);
+  });
+
+  it('releases interrupted reservations during polling, retry and cleanup without refunding dispatched attempts', async () => {
+    const me = await freshUser();
+    const now = new Date('2026-09-17T10:00:00Z');
+    const old = new Date(now.getTime() - 11 * 60_000);
+    const ids = Array.from({ length: 5 }, () => randomUUID());
+    for (const [index, id] of ids.entries()) {
+      await db.pool.query(`INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, created_at, updated_at)
+        VALUES ($1, $2, $3, 3000, $4, $5, 1, $6, $6)`, [id, me.userId, index === 3 ? 'failed' : 'transcribing', mono.length, sha(mono), old]);
+      await db.pool.query(`INSERT INTO transcription_attempts (transcription_id, attempt, user_id, duration_ms, state, reserved_at, budget_at, dispatched_at)
+        VALUES ($1, 1, $2, 3000, $3, $4, $4, $5)`, [id, me.userId, index === 4 ? 'dispatched' : 'reserved', old, index === 4 ? old : null]);
+    }
+    const { service } = await voiceFor(new ScriptedTranscriptionProvider([said('Reprise.')]), { clock: () => now });
+    expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(15000);
+    expect(await service.snapshot(me.userId, ids[0]!)).toMatchObject({ status: 'failed', errorCode: 'INTERRUPTED' });
+    expect((await send(service, me, { id: ids[1]! })).snapshot.status).toBe('completed');
+    await service.cleanup();
+    const attempts = (await db.pool.query('SELECT transcription_id, attempt, state FROM transcription_attempts WHERE user_id = $1', [me.userId])).rows;
+    for (const id of ids.slice(0, 4)) expect(attempts).toContainEqual({ transcription_id: id, attempt: 1, state: 'released' });
+    expect(attempts).toContainEqual({ transcription_id: ids[1], attempt: 2, state: 'dispatched' });
+    expect(attempts).toContainEqual({ transcription_id: ids[4], attempt: 1, state: 'dispatched' });
+    expect(await monthlyVoiceMilliseconds(db.pool, me.userId, now)).toBe(6000);
   });
 
   it('resumes a transcription cut by a restart and marks silent jobs as interrupted', async () => {

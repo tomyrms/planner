@@ -53,7 +53,7 @@ export class CommandRejection extends Error {
 
 /** What a receipt stores and what a duplicate replays. */
 export type StoredOutcome =
-  | ({ outcome: 'applied'; revision: number; aggregateId: string } & Record<string, unknown>)
+  | ({ outcome: 'applied'; revision: number; aggregateId: string; affectedTaskRevisions?: Record<string, number> } & Record<string, unknown>)
   | { outcome: 'rejected'; code: RejectionCode; message: string; currentRevision?: number };
 
 export type CommandResult =
@@ -81,5 +81,10 @@ export interface CommandContext {
 }
 
 /** `noop: true` marks an accepted command that changed nothing (revision unchanged). */
-export interface HandlerResult { revision: number; [key: string]: unknown }
+export interface HandlerResult {
+  revision: number;
+  /** Only project.delete/restore: exact revisions of tasks changed in the same transaction. */
+  affectedTaskRevisions?: Record<string, number>;
+  [key: string]: unknown;
+}
 export type Handler = (context: CommandContext) => Promise<HandlerResult>;

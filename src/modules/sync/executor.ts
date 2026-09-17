@@ -105,7 +105,7 @@ export async function applyCommandInTransaction(client: pg.PoolClient, db: NodeP
     client, db, actor, commandId: clientCommandId, type: checked.type, aggregateId,
     payload: checked.payload, precondition: checked.precondition,
     recordedAt: new Date(recordedAtMs).toISOString(), now, observedRevision: undefined,
-    checkPrecondition: (currentRevision) => checkPrecondition(db, actor.userId, aggregateId, checked.precondition, currentRevision),
+    checkPrecondition: (currentRevision) => checkPrecondition(db, actor.userId, checked.type, aggregateId, checked.precondition, currentRevision),
   };
   await client.query('SAVEPOINT command_effect');
   try {
@@ -175,17 +175,29 @@ export async function executePlan<T = undefined>(pool: pg.Pool, actor: CommandAc
   }));
 }
 
-async function checkPrecondition(db: NodePgDatabase, userId: string, aggregateId: string, precondition: Precondition, currentRevision: number): Promise<void> {
+async function checkPrecondition(db: NodePgDatabase, userId: string, type: CommandType, aggregateId: string, precondition: Precondition, currentRevision: number): Promise<void> {
   if (precondition.kind === 'none') return;
   if (precondition.kind === 'revision') {
     if (precondition.revision !== currentRevision) throw new CommandRejection('REVISION_MISMATCH', currentRevision);
     return;
   }
-  const [cited] = await db.select({ outcome: commandReceipts.outcome, result: commandReceipts.result })
+  const [cited] = await db.select({ outcome: commandReceipts.outcome, result: commandReceipts.result, type: commandReceipts.commandType })
     .from(commandReceipts)
     .where(and(eq(commandReceipts.clientCommandId, precondition.clientCommandId.toLowerCase()), eq(commandReceipts.userId, userId)));
   if (!cited || cited.outcome !== 'applied') throw new CommandRejection('DEPENDENCY_REJECTED', currentRevision);
-  if (cited.result.aggregateId !== aggregateId || cited.result.revision !== currentRevision) {
+  const aggregateType = commandAggregate[type];
+  let expectedRevision: unknown;
+  if (isCommandType(cited.type) && commandAggregate[cited.type] === aggregateType && cited.result.aggregateId === aggregateId) {
+    expectedRevision = cited.result.revision;
+  } else if (aggregateType === 'task' && (cited.type === 'project.delete' || cited.type === 'project.restore')) {
+    // A list can change several task revisions. Only its durable, owner-scoped receipt is evidence
+    // for this secondary target; neither a client field nor the list's own revision is sufficient.
+    const affected = cited.result.affectedTaskRevisions;
+    if (affected !== null && typeof affected === 'object' && !Array.isArray(affected) && Object.hasOwn(affected, aggregateId)) {
+      expectedRevision = (affected as Record<string, unknown>)[aggregateId];
+    }
+  }
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== currentRevision) {
     throw new CommandRejection('REVISION_MISMATCH', currentRevision);
   }
 }

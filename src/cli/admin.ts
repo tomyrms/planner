@@ -4,6 +4,7 @@ import { createPool } from '../infrastructure/db/pool.js';
 import { rotateGeneration } from '../infrastructure/db/recovery.js';
 import { AuthService } from '../modules/auth/index.js';
 import { purgeExpired } from '../modules/maintenance/index.js';
+import { runImportCommand } from './import.js';
 
 const usage = `Console locale de confiance uniquement :
   npm run admin -- pair --name "iPhone" [--user UUID]
@@ -11,6 +12,8 @@ const usage = `Console locale de confiance uniquement :
   npm run admin -- devices revoke UUID
   npm run admin -- restore-generation [--keep-devices]
   npm run admin -- purge
+  npm run admin -- import preview export.json --selection selection.json --user UUID --out plan.json
+  npm run admin -- import apply plan.json --user UUID --confirm-plan SHA256
 
 Le secret d'appairage apparaît une seule fois, expire en 10 minutes et doit être
 saisi dans l'iPhone. Ne partagez pas la sortie de cette commande.
@@ -23,7 +26,8 @@ des anciennes files hors ligne.`;
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { name: { type: 'string' }, user: { type: 'string' }, 'keep-devices': { type: 'boolean' }, help: { type: 'boolean' } },
+    options: { name: { type: 'string' }, user: { type: 'string' }, 'keep-devices': { type: 'boolean' }, help: { type: 'boolean' },
+      selection: { type: 'string' }, out: { type: 'string' }, 'confirm-plan': { type: 'string' } },
   });
   if (values.help || positionals.length === 0) { process.stdout.write(`${usage}\n`); return; }
   const [command, subcommand, deviceId] = positionals;
@@ -31,7 +35,8 @@ async function main(): Promise<void> {
     || (command === 'devices' && positionals.length === 1)
     || (command === 'devices' && subcommand === 'revoke' && positionals.length === 3 && deviceId)
     || (command === 'restore-generation' && positionals.length === 1)
-    || (command === 'purge' && positionals.length === 1);
+    || (command === 'purge' && positionals.length === 1)
+    || (command === 'import' && ['preview', 'apply'].includes(subcommand ?? '') && positionals.length === 3 && deviceId && values.user);
   if (!valid) throw new Error(usage);
   const config = loadConfig();
   if (command === 'restore-generation') {
@@ -46,6 +51,14 @@ Appareils révoqués : ${result.revokedDevices}
     return;
   }
   const pool = createPool(config.databaseUrl);
+  if (command === 'import') {
+    try {
+      await runImportCommand(pool, { mode: subcommand!, file: deviceId!, userId: values.user!, apiUrl: config.publicApiUrl,
+        ...(values.selection ? { selection: values.selection } : {}), ...(values.out ? { output: values.out } : {}),
+        ...(values['confirm-plan'] ? { confirmedHash: values['confirm-plan'] } : {}) });
+    } finally { await pool.end(); }
+    return;
+  }
   if (command === 'purge') {
     try {
       const counts = await purgeExpired(pool, new Date());

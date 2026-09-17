@@ -33,7 +33,8 @@ const durationMs = fileDuration(await readFile(file));
 const provider = new OpenAITranscriptionProvider({ apiKey: config.voice.provider.apiKey, model: config.voice.provider.model, baseUrl: config.voice.provider.baseUrl });
 const started = Date.now();
 try {
-  const result = await provider.transcribe({ audioPath: file, languages: LANGUAGE_HINTS, keywords, signal: AbortSignal.timeout(60_000) });
+  // This explicit operator probe runs outside the application and its per-user database budget.
+  const result = await provider.transcribe({ audioPath: file, languages: LANGUAGE_HINTS, keywords, signal: AbortSignal.timeout(60_000), beforeSend: async () => {} });
   process.stdout.write(`${provider.model} · ${(durationMs / 1000).toFixed(1)} s d'audio · ${Date.now() - started} ms\n`
     + `Langues : ${result.languages.join(', ') || '—'} · secondes facturées : ${result.seconds ?? 'non indiquées'}\n`
     + `Texte : ${result.text}\n`);

@@ -7,6 +7,7 @@ export const REQUIRED_TABLES = [
   'command_receipts', 'tombstones', 'server_meta', 'devices', 'auth_sessions', 'auth_refresh_tokens',
   'conversations', 'messages', 'assistant_turns', 'assistant_proposals', 'ai_actions', 'assistant_undos',
   'transcriptions', 'maintenance_runs',
+  'transcription_attempts',
   'tags', 'task_tags', 'user_settings',
 ] as const;
 /** Dumped too, but short-lived: losing them only cancels a pairing in progress. */
@@ -22,6 +23,7 @@ export const TABLE_INTRODUCED_IN: Record<(typeof REQUIRED_TABLES)[number], strin
   conversations: '0005_assistant.sql', messages: '0005_assistant.sql', assistant_turns: '0005_assistant.sql',
   assistant_proposals: '0005_assistant.sql', ai_actions: '0005_assistant.sql', assistant_undos: '0005_assistant.sql',
   transcriptions: '0006_voice_and_maintenance.sql', maintenance_runs: '0006_voice_and_maintenance.sql',
+  transcription_attempts: '0008_voice_attempt_accounting.sql',
   tags: '0007_task_details.sql', task_tags: '0007_task_details.sql', user_settings: '0007_task_details.sql',
 };
 

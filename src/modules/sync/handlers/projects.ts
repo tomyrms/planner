@@ -79,53 +79,62 @@ export const projectDelete: Handler = async (context) => {
   const { taskPolicy } = payloadOf(context, 'project.delete');
   const project = await lockProject(context);
   await context.checkPrecondition(revisionOf(project));
-  if (project.deletedAt !== null) return noop(project, { taskPolicy, affectedTaskIds: [] });
+  if (project.deletedAt !== null) return noop(project, { taskPolicy, affectedTaskIds: [], affectedTaskRevisions: {} });
   const now = context.now.toISOString();
   const members = await lockMembers(context, project.id);
   let affectedTaskIds: string[];
+  let changed: Array<{ id: string; revision: string }> = [];
   if (taskPolicy === 'move_tasks_to_inbox') {
     // Trashed tasks move too, so restoring them later never depends on this list.
     affectedTaskIds = members.map((task) => task.id);
     if (affectedTaskIds.length > 0) {
-      await context.client.query(
+      const updated = await context.client.query<{ id: string; revision: string }>(
         `UPDATE tasks AS t SET project_id = NULL, search_text = v.search_text, revision = t.revision + 1, updated_at = $3
          FROM unnest($1::uuid[], $2::text[]) AS v(id, search_text)
-         WHERE t.id = v.id AND t.user_id = $4`,
+         WHERE t.id = v.id AND t.user_id = $4 RETURNING t.id, t.revision`,
         [affectedTaskIds, members.map((task) => searchTextFor(task, null)), now, context.actor.userId],
       );
+      changed = updated.rows;
     }
   } else {
     // Tasks already in the trash keep their own deletion.
     affectedTaskIds = members.filter((task) => task.deletedAt === null).map((task) => task.id);
     if (affectedTaskIds.length > 0) {
-      await context.client.query(
+      const updated = await context.client.query<{ id: string; revision: string }>(
         `UPDATE tasks SET deleted_at = $2, deleted_by_command_id = $3, revision = revision + 1, updated_at = $2
-         WHERE id = ANY($1::uuid[]) AND user_id = $4`,
+         WHERE id = ANY($1::uuid[]) AND user_id = $4 RETURNING id, revision`,
         [affectedTaskIds, now, context.commandId, context.actor.userId],
       );
+      changed = updated.rows;
     }
   }
   const revision = await saveProject(context, project, { deletedAt: now, deletedByCommandId: context.commandId });
-  return { revision, taskPolicy, affectedTaskIds };
+  return {
+    revision, taskPolicy, affectedTaskIds: changed.map((row) => row.id).sort(),
+    affectedTaskRevisions: Object.fromEntries(changed.map((row) => [row.id, Number(row.revision)])),
+  };
 };
 
 /** Brings back the tasks trashed by the same deletion command, and only those. */
 export const projectRestore: Handler = async (context) => {
   const project = await lockProject(context);
   await context.checkPrecondition(revisionOf(project));
-  if (project.deletedAt === null) return noop(project, { affectedTaskIds: [] });
+  if (project.deletedAt === null) return noop(project, { affectedTaskIds: [], affectedTaskRevisions: {} });
   const now = context.now.toISOString();
-  let affectedTaskIds: string[] = [];
+  let changed: Array<{ id: string; revision: string }> = [];
   if (project.deletedByCommandId !== null) {
     const members = await lockMembers(context, project.id);
-    const restored = await context.client.query<{ id: string }>(
+    const restored = await context.client.query<{ id: string; revision: string }>(
       `UPDATE tasks SET deleted_at = NULL, deleted_by_command_id = NULL, revision = revision + 1, updated_at = $1
        WHERE id = ANY($2::uuid[]) AND user_id = $3 AND deleted_by_command_id = $4
-       RETURNING id`,
+       RETURNING id, revision`,
       [now, members.map((task) => task.id), context.actor.userId, project.deletedByCommandId],
     );
-    affectedTaskIds = restored.rows.map((row) => row.id).sort();
+    changed = restored.rows;
   }
   const revision = await saveProject(context, project, { deletedAt: null, deletedByCommandId: null });
-  return { revision, affectedTaskIds };
+  return {
+    revision, affectedTaskIds: changed.map((row) => row.id).sort(),
+    affectedTaskRevisions: Object.fromEntries(changed.map((row) => [row.id, Number(row.revision)])),
+  };
 };

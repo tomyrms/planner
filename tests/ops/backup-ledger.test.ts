@@ -10,19 +10,28 @@ describe('backup migration compatibility', () => {
     const expected = await expectedBackupMigrations();
     const legacy = expected.filter((row) => row.name < '0007');
     const applied = validateDumpLedger(parseDumpLedger(sqlFor(legacy)), expected);
-    const legacyTables = REQUIRED_TABLES.filter((table) => TABLE_INTRODUCED_IN[table] !== '0007_task_details.sql');
+    const legacyTables = REQUIRED_TABLES.filter((table) => TABLE_INTRODUCED_IN[table] === null || applied.includes(TABLE_INTRODUCED_IN[table]!));
     expect(missingTables(listingFor(legacyTables), applied)).toEqual([]);
     expect(missingTables(listingFor(legacyTables.filter((table) => table !== 'messages')), applied)).toEqual(['messages']);
   });
 
-  it('requires every new table once the dump ledger includes 0007; old-looking omissions cannot bypass it', async () => {
+  it('requires every new table once the dump ledger includes its migration; old-looking omissions cannot bypass it', async () => {
     const expected = await expectedBackupMigrations();
     const applied = validateDumpLedger(parseDumpLedger(sqlFor(expected)), expected);
     expect(missingTables(listingFor(REQUIRED_TABLES), applied)).toEqual([]);
-    for (const omitted of ['tags', 'task_tags', 'user_settings']) {
+    for (const omitted of ['tags', 'task_tags', 'user_settings', 'transcription_attempts']) {
       expect(missingTables(listingFor(REQUIRED_TABLES.filter((table) => table !== omitted)), applied)).toEqual([omitted]);
     }
     expect(missingTables(listingFor(REQUIRED_TABLES).replaceAll('DATA public', 'DATA foreign'), applied)).toContain('tasks');
+  });
+
+  it('accepts a pre-0008 dump without a voice ledger but still requires all 0007 tables', async () => {
+    const expected = await expectedBackupMigrations();
+    const legacy = expected.filter((row) => row.name < '0008');
+    const applied = validateDumpLedger(parseDumpLedger(sqlFor(legacy)), expected);
+    const legacyTables = REQUIRED_TABLES.filter((table) => table !== 'transcription_attempts');
+    expect(missingTables(listingFor(legacyTables), applied)).toEqual([]);
+    expect(missingTables(listingFor(legacyTables.filter((table) => table !== 'tags')), applied)).toEqual(['tags']);
   });
 
   it('refuses changed, missing-middle, future and pre-restorable migration history', async () => {

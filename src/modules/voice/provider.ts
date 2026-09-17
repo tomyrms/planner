@@ -8,6 +8,9 @@ export interface TranscriptionRequest {
   /** Short list of names the user uses (lists, C#…); hints never guarantee a word. */
   keywords: readonly string[];
   signal: AbortSignal;
+  /** Must commit the attempt's budget immediately before sending, after local file preparation.
+   * Throwing prevents the HTTP call. The provider must never call this more than once per request. */
+  beforeSend: () => Promise<void>;
 }
 
 export interface TranscriptionResult {
@@ -61,6 +64,8 @@ export class OpenAITranscriptionProvider implements TranscriptionProvider {
     // Array fields use the repeated "name[]" form of the OpenAI multipart examples.
     for (const language of request.languages) form.append('languages[]', language);
     for (const keyword of request.keywords) form.append('keywords[]', keyword);
+    if (request.signal.aborted) throw new TranscriptionError('TRANSCRIPTION_TIMEOUT');
+    await request.beforeSend();
     let response: Response;
     try {
       response = await this.fetcher(`${this.baseUrl}/audio/transcriptions`, {
@@ -93,6 +98,7 @@ export class SimulatedTranscriptionProvider implements TranscriptionProvider {
   constructor(private readonly text = 'Demain rappelle-moi de [voix simulée] réécouter le message vers 17h.') {}
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
     if (request.signal.aborted) throw new TranscriptionError('TRANSCRIPTION_TIMEOUT');
+    await request.beforeSend();
     return { text: this.text, languages: ['fr'], seconds: null };
   }
 }
@@ -105,6 +111,8 @@ export class ScriptedTranscriptionProvider implements TranscriptionProvider {
   private index = 0;
   constructor(private readonly steps: ReadonlyArray<TranscriptionResult | TranscriptionError | ((request: TranscriptionRequest) => Promise<TranscriptionResult>)>) {}
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+    if (request.signal.aborted) throw new TranscriptionError('TRANSCRIPTION_TIMEOUT');
+    await request.beforeSend();
     this.requests.push(request);
     const step = this.steps[Math.min(this.index++, this.steps.length - 1)];
     if (step === undefined) throw new TranscriptionError('TRANSCRIPTION_UNAVAILABLE');

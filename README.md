@@ -19,8 +19,9 @@ Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la 
 | `fixtures/assistant` | Jeu d'évaluation versionné (31 cas) : test déterministe et évaluation réelle, dont tags et sous-tâches. |
 | `src/modules/voice` | `/api/v1/assistant/transcriptions` (multipart) : contrôle du conteneur M4A, transcription OpenAI `gpt-transcribe` ou simulée, essais, plafonds, abandon, nettoyage de l'audio. |
 | `src/modules/export` | `GET /api/v1/export` : archive JSON versionnée, instantané cohérent, un export par minute par appareil. |
+| `src/modules/import` | Import sélectif en console : aperçu privé, confirmation par empreinte, nouveaux identifiants, application atomique et reprise du même plan sans doublons. |
 | `src/modules/auth` | Appairage depuis la console, rotation des refresh tokens, jeton de sync, déconnexion, JWKS. |
-| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0007). |
+| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0008). |
 | `powersync/` | Configuration du service PowerSync et Sync Streams (lecture seule, filtrée par utilisateur). |
 | `src/infrastructure/db` | Runner de migrations, provisionnement PowerSync, règles de sauvegarde, rotation de génération. |
 
@@ -28,7 +29,21 @@ L'app iPhone contient maintenant les écrans de tâches, l'agenda et le calendri
 
 `GET /api/v1/diagnostics` est authentifié et expose uniquement l'état technique et les compteurs. La corbeille est purgée après 30 jours, une fois par jour ; le journal IA reste tant que la tâche ou sa conversation existe. **Reçus et tombstones restent conservés** tant que la récupération des files hors ligne de plus de 90 jours n'est pas implémentée : les effacer maintenant permettrait de rejouer d'anciennes commandes.
 
-La récupération guidée conserve une archive vérifiée et la file existante avant de changer de serveur, d'identité ou de génération. L'import sélectif d'un export et la validation complète sur iPhone restent à faire.
+La récupération guidée conserve une archive vérifiée et la file existante avant de changer de serveur, d'identité ou de génération. L'import sélectif est disponible en console ; la validation complète sur iPhone reste à faire.
+
+### Import sélectif
+
+Préparer un JSON de sélection explicite avec `taskIds`, `projectIds` et `tagIds` (tableaux d'UUID présents dans l'archive). Les listes et tags non sélectionnés ne sont pas recréés : leurs tâches deviennent Inbox ou perdent ces affectations, avec avertissements dans l'aperçu.
+
+```powershell
+.\scripts\npm-local.ps1 run admin -- import preview export.json --selection selection.json --user UUID --out .local/import-plan.json
+# Examiner le plan privé et ses avertissements, puis confirmer son empreinte affichée.
+.\scripts\npm-local.ps1 run admin -- import apply .local/import-plan.json --user UUID --confirm-plan SHA256
+```
+
+Les versions serveur/iPhone 1 sont acceptées, dans la limite de 20 Mio et 500 commandes. L'import recrée uniquement les objets choisis avec de nouveaux IDs, via le domaine. Il ne rejoue ni file de commandes, ni historique, ni réglages. Une série exige une nouvelle ancre explicite dans `restartSeries`; ses anciennes occurrences restent exclues. Les collisions de noms de tags demandent un renommage explicite dans `tagNames`. Réutiliser le même plan après une interruption ; régénérer un plan crée un autre import. Le serveur, le propriétaire, la génération et l'empreinte sont contrôlés à l'application.
+
+Le budget voix est réservé par tentative puis imputé au mois UTC de son envoi au fournisseur. Une tentative autorisée reste comptée si la réponse se perd. Les essais antérieurs à la migration 0008 restent des estimations au mois de création, leurs horodatages individuels n'étant pas connus.
 
 Les tâches disposent d'une description, d'une checklist à un niveau (hors récurrence) et de tags réutilisables. Dans Réglages > Assistant, le classement automatique peut être activé pour les nouvelles tâches créées par l'assistant : jusqu'à trois tags existants pertinents, aucun si la correspondance est incertaine. Le réglage est désactivé par défaut ; les résultats indiquent les ajouts et restent annulables. Les nouvelles tables sont incluses dans la réplication et les sauvegardes ; les anciens dumps sont contrôlés selon leurs migrations puis mis à niveau lors de leur restauration.
 
