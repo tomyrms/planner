@@ -88,6 +88,7 @@ final class AppServices {
     let undo = UndoCenter()
     let assistantHistory: AssistantRepository
     let assistant: AssistantStore
+    let voice: VoiceMessageStore
 
     init(db: any PowerSyncDatabaseProtocol, api: APIClient, session: StoredSession) {
         self.db = db
@@ -99,6 +100,7 @@ final class AppServices {
         directory = ProjectDirectory()
         assistantHistory = AssistantRepository(db: db)
         assistant = AssistantStore(api: api, repository: assistantHistory)
+        voice = VoiceMessageStore(api: api, assistant: assistant)
     }
 
     func start() async {

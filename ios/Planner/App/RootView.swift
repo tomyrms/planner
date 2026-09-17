@@ -21,8 +21,13 @@ struct RootView: View {
         }
         .task { await app.launch() }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active, case .ready(let services) = app.phase else { return }
-            Task { await services.sync.resumeIfRecoverable() }
+            guard case .ready(let services) = app.phase else { return }
+            if phase == .active {
+                Task { await services.sync.resumeIfRecoverable() }
+            } else {
+                // Leaving the foreground ends a recording without sending it.
+                Task { await services.voice.appWillResignActive() }
+            }
         }
     }
 }

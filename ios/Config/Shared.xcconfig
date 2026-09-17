@@ -21,6 +21,9 @@ SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
 PLANNER_STRICT = NO
 SWIFT_TREAT_WARNINGS_AS_ERRORS = $(PLANNER_STRICT)
 
+// Permission texts (03_iOS/06_Permissions_Matrix.md).
+INFOPLIST_KEY_NSMicrophoneUsageDescription = Le micro sert uniquement à enregistrer les messages vocaux envoyés à l’assistant.
+
 // Signing: the team is set in Local.xcconfig (not versioned), never in the project file.
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM =

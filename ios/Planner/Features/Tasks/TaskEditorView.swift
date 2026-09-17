@@ -69,6 +69,7 @@ struct TaskEditorView: View {
                     }
                 }
                 if case .edit(let task) = mode {
+                    AssistantChangesSection(taskId: task.id)
                     Section {
                         if task.isDeleted {
                             Button("Restaurer") { setDeleted(task, false) }

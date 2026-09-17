@@ -386,23 +386,34 @@ private struct Composer: View {
                         .font(.footnote)
                 }
             }
-            HStack(alignment: .bottom, spacing: Spacing.sm) {
-                TextField("Message…", text: $store.draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .focused($focused)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, Spacing.sm)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: Radius.medium))
-                VoiceButton()
-                Button {
-                    Task { await store.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title)
-                        .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+            VoiceDraftBar()
+            if let notice = services.voice.notice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if services.voice.phase == .recording {
+                VoiceRecorderBar()
+            } else {
+                HStack(alignment: .bottom, spacing: Spacing.sm) {
+                    TextField("Message…", text: $store.draft, axis: .vertical)
+                        .lineLimit(1...6)
+                        .focused($focused)
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: Radius.medium))
+                    VoiceButton()
+                    Button {
+                        Task { await store.send() }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title)
+                            .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+                    }
+                    .disabled(!store.canSend)
+                    .accessibilityLabel("Envoyer")
                 }
-                .disabled(!store.canSend)
-                .accessibilityLabel("Envoyer")
             }
         }
         .padding(.horizontal, Spacing.lg)

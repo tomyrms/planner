@@ -151,7 +151,7 @@ actor APIClient {
 
     // MARK: - Tokens
 
-    private func authorized(_ method: String, _ path: String, body: Data? = nil, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
+    func authorized(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json", timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         for attempt in 0..<2 {
             let token = try await validAccessToken(forceRefresh: attempt > 0)
             var request = URLRequest(url: baseURL.appending(path: path))
@@ -160,7 +160,7 @@ actor APIClient {
             request.setValue(clientVersion, forHTTPHeaderField: "X-Client-Version")
             request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
             if let body {
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue(contentType, forHTTPHeaderField: "Content-Type")
                 request.httpBody = body
             }
             let (data, response) = try await Self.send(request, with: urlSession)
@@ -229,7 +229,7 @@ actor APIClient {
         }
     }
 
-    private static func failure(_ data: Data, _ response: HTTPURLResponse) -> APIError {
+    static func failure(_ data: Data, _ response: HTTPURLResponse) -> APIError {
         let body = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
         if response.statusCode == 401 { return .unauthorized(code: body?.error.code) }
         return .http(
@@ -242,7 +242,7 @@ actor APIClient {
         )
     }
 
-    private static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(type, from: data)
         } catch {

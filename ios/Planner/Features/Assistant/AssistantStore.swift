@@ -154,7 +154,7 @@ final class AssistantStore {
 
     // MARK: - Sending
 
-    func send(text override: String? = nil) async {
+    func send(text override: String? = nil, transcriptionId: String? = nil) async {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isBusy, pending == nil else { return }
         notice = nil
@@ -172,7 +172,7 @@ final class AssistantStore {
             conversationId: conversationId,
             messageId: UUID().uuidString.lowercased(),
             text: String(text.prefix(4000)),
-            transcriptionId: nil,
+            transcriptionId: transcriptionId,
             revisesMessageId: revising?.messageId,
             referenceInstant: Timestamp.format(Date()),
             timeZone: TimeZone.current.identifier,
@@ -251,6 +251,11 @@ final class AssistantStore {
             phase = .offline
         case .transport, .invalidResponse:
             phase = .unknown
+        case .http(_, .some("TRANSCRIPTION_UNKNOWN"), _, _, _, _) where turn.transcriptionId != nil:
+            // The transcript was erased (unused for 24 h): the same text goes as a written message.
+            forget()
+            phase = .idle
+            Task { await send(text: turn.text) }
         case .http(let status, let code, let retryAfter, _, let minimumVersion, _):
             // Refused before any processing: nothing happened, the text goes back to the composer.
             forget()
