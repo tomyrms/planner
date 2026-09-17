@@ -34,6 +34,28 @@ nonisolated enum LocalDatabase {
             .text("created_at"), .text("updated_at"),
         ], indexes: [Index.ascending(name: "task", column: "task_id")]),
         Table(name: "server_meta", columns: [.text("generation")]),
+        // Assistant history, read-only on the phone (ADR-029): changed only through the assistant routes.
+        Table(name: "conversations", columns: [.text("title"), .text("created_at"), .text("updated_at")]),
+        Table(name: "messages", columns: [
+            .text("conversation_id"), .integer("seq"), .text("role"), .text("kind"), .text("text"),
+            .text("original_transcript"), .text("transcription_id"), .text("turn_id"), .text("revises_message_id"), .text("created_at"),
+        ], indexes: [Index.ascending(name: "conversation", columns: ["conversation_id", "seq"])]),
+        Table(name: "assistant_turns", columns: [
+            .text("conversation_id"), .text("user_message_id"), .text("status"), .text("risk_class"),
+            .text("reply_message_id"), .text("error_code"), .text("created_at"), .text("finished_at"),
+        ], indexes: [Index.ascending(name: "conversation", column: "conversation_id")]),
+        Table(name: "assistant_proposals", columns: [
+            .text("turn_id"), .text("plan_hash"), .text("preview"), .text("state"), .text("expires_at"),
+            .text("decided_at"), .text("created_at"),
+        ], indexes: [Index.ascending(name: "turn", column: "turn_id")]),
+        Table(name: "ai_actions", columns: [
+            .text("group_id"), .integer("plan_index"), .text("turn_id"), .text("proposal_id"), .text("aggregate_type"),
+            .text("aggregate_id"), .text("command_type"), .text("changes"), .integer("resulting_revision"),
+            .text("undo_state"), .text("undo_expires_at"), .text("undo_of_action_id"), .text("created_at"),
+        ], indexes: [
+            Index.ascending(name: "turn", column: "turn_id"),
+            Index.ascending(name: "aggregate", column: "aggregate_id"),
+        ]),
         // One insert-only row per manual command, id = clientCommandId (ADR-004, criterion 9).
         Table(name: "outbox", columns: [
             .text("type"), .integer("payload_version"), .text("aggregate_type"), .text("aggregate_id"),

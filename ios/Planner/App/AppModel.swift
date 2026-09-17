@@ -86,6 +86,8 @@ final class AppServices {
     let sync: SyncController
     let directory: ProjectDirectory
     let undo = UndoCenter()
+    let assistantHistory: AssistantRepository
+    let assistant: AssistantStore
 
     init(db: any PowerSyncDatabaseProtocol, api: APIClient, session: StoredSession) {
         self.db = db
@@ -95,6 +97,8 @@ final class AppServices {
         queue = SyncQueueRepository(db: db)
         sync = SyncController(db: db, api: api)
         directory = ProjectDirectory()
+        assistantHistory = AssistantRepository(db: db)
+        assistant = AssistantStore(api: api, repository: assistantHistory)
     }
 
     func start() async {
@@ -103,6 +107,7 @@ final class AppServices {
     }
 
     func stop() async {
+        assistant.stop()
         directory.stop()
         await sync.stop()
     }

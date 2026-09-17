@@ -13,7 +13,7 @@ struct MainTabView: View {
                 ComingSoonView(title: "Calendrier", systemImage: "calendar", message: "Le mois et l’agenda du jour arrivent avec la gestion du temps.")
             }
             Tab("Assistant", systemImage: "text.bubble") {
-                ComingSoonView(title: "Assistant", systemImage: "text.bubble", message: "L’assistant arrive dans une prochaine version.")
+                AssistantView()
             }
             Tab("Listes", systemImage: "list.bullet") {
                 ListsView()

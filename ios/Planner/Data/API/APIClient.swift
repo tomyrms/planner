@@ -3,7 +3,7 @@ import Foundation
 nonisolated enum APIError: Error, Sendable, Equatable {
     /// No HTTP response (offline, timeout, TLS…): retried with the same identifiers.
     case transport(URLError.Code)
-    case http(status: Int, code: String?, retryAfter: TimeInterval?, serverGeneration: String?, minimumVersion: String?)
+    case http(status: Int, code: String?, retryAfter: TimeInterval?, serverGeneration: String?, minimumVersion: String?, message: String?)
     /// Authentication impossible even after one refresh: the iPhone must be paired again.
     case unauthorized(code: String?)
     case invalidResponse
@@ -68,6 +68,7 @@ private nonisolated struct RefreshBody: Encodable {
 private nonisolated struct ErrorEnvelope: Decodable {
     nonisolated struct Body: Decodable {
         let code: String
+        let message: String?
         let serverGeneration: String?
         let minimumVersion: String?
     }
@@ -128,13 +129,34 @@ actor APIClient {
         accessToken = nil
     }
 
+    /// JSON call with one expected status; any other status becomes an `APIError`.
+    func call<Response: Decodable, Body: Encodable & Sendable>(_ method: String, _ path: String, body: Body,
+                                                             expecting status: Int, timeout: TimeInterval = 30) async throws -> Response {
+        let payload = try JSONEncoder().encode(body)
+        let (data, response) = try await authorized(method, path, body: payload, timeout: timeout)
+        guard response.statusCode == status else { throw Self.failure(data, response) }
+        return try Self.decode(Response.self, from: data)
+    }
+
+    func call<Response: Decodable>(_ method: String, _ path: String, expecting status: Int, timeout: TimeInterval = 30) async throws -> Response {
+        let (data, response) = try await authorized(method, path, timeout: timeout)
+        guard response.statusCode == status else { throw Self.failure(data, response) }
+        return try Self.decode(Response.self, from: data)
+    }
+
+    func callWithoutBody(_ method: String, _ path: String, expecting status: Int) async throws {
+        let (data, response) = try await authorized(method, path)
+        guard response.statusCode == status else { throw Self.failure(data, response) }
+    }
+
     // MARK: - Tokens
 
-    private func authorized(_ method: String, _ path: String, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
+    private func authorized(_ method: String, _ path: String, body: Data? = nil, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         for attempt in 0..<2 {
             let token = try await validAccessToken(forceRefresh: attempt > 0)
             var request = URLRequest(url: baseURL.appending(path: path))
             request.httpMethod = method
+            request.timeoutInterval = timeout
             request.setValue(clientVersion, forHTTPHeaderField: "X-Client-Version")
             request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
             if let body {
@@ -190,7 +212,7 @@ actor APIClient {
 
     private static func makeURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForRequest = 120
         configuration.waitsForConnectivity = false
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
@@ -215,7 +237,8 @@ actor APIClient {
             code: body?.error.code,
             retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap { TimeInterval($0) },
             serverGeneration: body?.error.serverGeneration,
-            minimumVersion: body?.error.minimumVersion
+            minimumVersion: body?.error.minimumVersion,
+            message: body?.error.message
         )
     }
 

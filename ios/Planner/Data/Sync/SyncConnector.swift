@@ -142,16 +142,16 @@ actor SyncConnector: PowerSyncBackendConnectorProtocol {
         switch error {
         case .unauthorized:
             setBlock(.pairingRequired)
-        case .http(409, .some("SERVER_GENERATION_CHANGED"), _, let generation, _):
+        case .http(409, .some("SERVER_GENERATION_CHANGED"), _, let generation, _, _):
             // No complete(), no purge: the queue waits for the recovery (03_iOS/02_Local_Data_Sync.md).
             setBlock(.generationChanged(generation))
-        case .http(426, _, _, _, let minimumVersion):
+        case .http(426, _, _, _, let minimumVersion, _):
             setBlock(.updateRequired(minimumVersion: minimumVersion))
-        case .http(429, _, let retryAfter, _, _):
+        case .http(429, _, let retryAfter, _, _, _):
             deferUploads(retryAfter ?? backoff())
-        case .http(let status, _, _, _, _) where status >= 500 || status == 408:
+        case .http(let status, _, _, _, _, _) where status >= 500 || status == 408:
             deferUploads(backoff())
-        case .http(let status, let code, _, _, _):
+        case .http(let status, let code, _, _, _, _):
             setBlock(.actionRequired(status: status, code: code))
         case .transport, .invalidResponse:
             deferUploads(backoff())

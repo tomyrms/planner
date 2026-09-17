@@ -88,11 +88,11 @@ struct PairingView: View {
         switch error {
         case .unauthorized:
             "Secret refusé : il est inconnu, déjà utilisé ou expiré. Générez un nouveau lien."
-        case .http(429, _, _, _, _):
+        case .http(429, _, _, _, _, _):
             "Trop d’essais. Réessayez dans quelques minutes."
-        case .http(426, _, _, _, _):
+        case .http(426, _, _, _, _, _):
             "Cette version de l’app est trop ancienne pour ce serveur."
-        case .http(let status, let code, _, _, _):
+        case .http(let status, let code, _, _, _, _):
             "Appairage refusé (\(code ?? "HTTP \(status)"))."
         case .transport:
             "Serveur injoignable depuis cet iPhone. Vérifiez l’adresse et la connexion."
