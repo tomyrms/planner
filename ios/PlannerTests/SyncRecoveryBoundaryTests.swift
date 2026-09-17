@@ -326,6 +326,8 @@ struct SyncRecoveryBoundaryTests {
                                        chaining: .never, payload: ["set": ["autoTags": false]])
             try await fixture.db.writeTransaction { tx in try Outbox.insert(command, in: tx) }
             let before = try await fixture.queueRows()
+            let pendingDomainIds = try await AssistantRepository(db: fixture.db).pendingAggregateIds()
+            #expect(!pendingDomainIds.contains(fixture.userId))
             let connector = fixture.connector()
             await connector.installOnlineActionGuard()
             try fixture.http.reply(to: "/" + path, status: 201, body: [:])

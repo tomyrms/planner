@@ -49,7 +49,7 @@ nonisolated extension TaskRepository {
     func setTagDeleted(_ id: String, _ deleted: Bool) async throws {
         try await db.writeTransaction { tx in
             let stored = try tx.getOptional(sql: "SELECT name, deleted_at FROM tags WHERE id = ?", parameters: [id]) {
-                (name: try $0.getString(index: 0), deleted: try $0.getStringOptional(index: 1) != nil)
+                (name: try $0.getString(index: 0), deleted: $0.getStringOptional(index: 1) != nil)
             }
             guard let tag = stored else { throw TaskDetailsError.unavailableTag }
             guard tag.deleted != deleted else { return }

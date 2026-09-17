@@ -139,12 +139,14 @@ nonisolated struct AssistantRepository: Sendable {
         }
     }
 
-    /// Aggregates with manual commands still waiting in the queue (sent as `unsyncedAggregateIds`).
+    /// Domain aggregates with manual commands still waiting in the queue. Settings use the
+    /// connector's preflight barrier instead: a saved PendingTurn must not retain a stale setting ID.
     func pendingAggregateIds() async throws -> [String] {
         try await db.getAll(
             sql: """
             SELECT DISTINCT json_extract(data, '$.data.aggregate_id') FROM ps_crud
             WHERE json_extract(data, '$.type') = 'outbox'
+              AND json_extract(data, '$.data.aggregate_type') <> 'settings'
             """,
             parameters: []
         ) { cursor in try cursor.getString(index: 0) }
