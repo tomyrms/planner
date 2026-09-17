@@ -2,19 +2,21 @@
 
 App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031) et publie un **IPA non signé** à installer avec iLoader. Le Mac n'est plus qu'une solution de secours. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
 
-État au 17 septembre : appairage par lien, Aujourd'hui, Inbox, À venir, listes, Terminées, Corbeille, recherche, éditeur et synchronisation sur PowerSync Swift 1.16.2 ; calendrier, séries et rappels locaux ; assistant texte, historique et capture vocale. L'utilisateur a installé l'app et signalé un envoi vocal refusé ou bloqué. Cela ne valide pas encore l'ensemble des parcours sur appareil.
+État au 17 septembre : appairage par lien, accueil **Mes tâches** (Aujourd'hui par défaut, Toutes les tâches actives, Inbox, À venir), listes, Terminées, Corbeille, recherche et synchronisation sur PowerSync Swift 1.16.2 ; calendrier, séries et rappels locaux ; assistant texte, historique et capture vocale. L'éditeur propose description, sous-tâches sur tâches sans répétition et tags réutilisables. L'utilisateur essaie l'app ; cela ne valide pas encore l'ensemble des parcours sur appareil.
+
+Réglages > Assistant propose **Tags automatiques**, désactivé par défaut : l'assistant consulte le catalogue et choisit les tags pertinents pour les tâches qu'on lui demande de créer. L'état de synchronisation du réglage est visible. Réglages > Tags permet de gérer le catalogue.
 
 Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'envoi et de transcription et permet de mettre l'attente en pause. Il récupère le résultat par GET avant tout nouvel envoi et conserve le texte jusqu'à sa remise durable à l'assistant. Les tests de reprise s'exécutent dans le workflow iOS ; la capture au microphone et les interruptions demandent encore un essai sur l'iPhone.
 
 ## Capture rapide
 
-Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** dans la barre du bas, ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Les indications apparaissent pendant la capture. Après verrouillage, retirez le doigt puis utilisez Arrêter ou Annuler. Un relâchement sans verrouillage arrête aussi l'enregistrement.
+Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** dans la barre du bas, ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Les indications apparaissent pendant la capture. Après verrouillage, une petite capsule garde la durée et les commandes Arrêter/Annuler ; retirez le doigt. Un relâchement sans verrouillage arrête aussi l'enregistrement.
 
 L'arrêt conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
 
 ## Exporter les données locales
 
-Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. L'import et la récupération guidée après restauration restent à livrer.
+Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les détails des tâches, tags, réglage assistant, commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. La récupération guidée conserve une archive vérifiée et l'ancienne copie locale ; l'import sélectif d'un export reste à livrer.
 
 ## Appairer l'app
 

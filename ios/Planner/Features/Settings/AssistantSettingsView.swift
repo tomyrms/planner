@@ -16,7 +16,7 @@ struct AssistantSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Tags automatiques", isOn: Binding(get: { autoTags }, set: save))
+                Toggle("Tags automatiques", isOn: Binding(get: { autoTags }, set: { save($0) }))
                     .disabled(!loaded || readFailed || saving)
                 if !loaded && !readFailed { ProgressView("Lecture du réglage…") }
                 if readFailed {
