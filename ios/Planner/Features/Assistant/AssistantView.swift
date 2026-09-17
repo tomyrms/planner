@@ -44,7 +44,7 @@ struct AssistantView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Nouvelle conversation", systemImage: "square.and.pencil") { store.newConversation() }
-                        .disabled(store.pending != nil || store.isBusy || store.isEmptyConversation || services.voice.phase != .idle)
+                        .disabled(store.pending != nil || store.isBusy || (store.isEmptyConversation && store.draft.isEmpty) || services.voice.phase != .idle)
                 }
             }
             .sheet(isPresented: $showingHistory) {
@@ -344,6 +344,13 @@ private struct TurnStateView: View {
                 Text("Le serveur n’a pas reçu cette demande.")
                 HStack {
                     Button("Envoyer") { Task { await store.resend() } }
+                        .buttonStyle(.bordered)
+                    Button("Modifier le message") { store.discardPending() }
+                }
+            case .refused:
+                Text("Le message n’a pas été accepté. Il est conservé.")
+                HStack {
+                    Button("Réessayer") { Task { await store.resend() } }
                         .buttonStyle(.bordered)
                     Button("Modifier le message") { store.discardPending() }
                 }

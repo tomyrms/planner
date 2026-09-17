@@ -1,6 +1,6 @@
 # Builds a ZIP of the project for an outside review, without secrets or bulky local folders.
 #   .\scripts\export-review.ps1 [-Output <zip>] [-IncludeAudit]
-# Content: the documentation pack, the Markdown files at the workspace root and the backend files that Git
+# Content: the documentation pack, the four project handoff/review documents and the backend files that Git
 # would keep (tracked or not ignored): no .env, .local/, backups/, node_modules/, .tools/, dist/ or .git/.
 # The archive is refused if a file looks like a key, a dump, or contains a value of the local .env.
 param(
@@ -32,7 +32,11 @@ function Add-Tree([string]$relative) {
     $files[$name] = $item.FullName
   }
 }
-foreach ($item in Get-ChildItem -LiteralPath $workspace -File -Filter '*.md') { $files[$item.Name] = $item.FullName }
+# Root Markdown may also contain private conversation transcripts. Export only the project documents.
+foreach ($name in @('HANDOFF_CODEX.md', 'OPEN_QUESTIONS.md', 'PRE_IMPLEMENTATION_REVIEW.md', 'PROPOSED_CHANGES.md')) {
+  $path = Join-Path $workspace $name
+  if (Test-Path -LiteralPath $path -PathType Leaf) { $files[$name] = $path }
+}
 Add-Tree $pack
 if ($IncludeAudit) { Add-Tree '_audit_work' }
 $listed = & git -C $backend ls-files --cached --others --exclude-standard

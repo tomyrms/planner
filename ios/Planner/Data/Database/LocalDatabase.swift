@@ -69,7 +69,7 @@ nonisolated enum LocalDatabase {
         Table(name: "scheduled_notifications", columns: [.text("trigger_at"), .text("accepted_at")], localOnly: true)
     )
 
-    static func open() -> any PowerSyncDatabaseProtocol {
+    static func open(fileName: String = LocalDatabase.fileName) -> any PowerSyncDatabaseProtocol {
         PowerSyncDatabase(schema: schema, dbFilename: fileName)
     }
 }

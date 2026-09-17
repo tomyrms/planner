@@ -60,6 +60,8 @@ final class AssistantStore: VoiceAssistant {
         case offline
         /// The server has no trace of it.
         case notReceived
+        /// Rejected before processing; keep the complete request until retry or explicit editing.
+        case refused
     }
 
     private(set) var conversationId: String
@@ -77,7 +79,7 @@ final class AssistantStore: VoiceAssistant {
 
     private let api: APIClient
     private let repository: AssistantRepository
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private var messages: [ThreadMessage] = []
     private var turns: [String: TurnControls] = [:]
     private var snapshots: [String: TurnSnapshot] = [:]
@@ -94,9 +96,10 @@ final class AssistantStore: VoiceAssistant {
         static let pending = "assistant.pending"
     }
 
-    init(api: APIClient, repository: AssistantRepository) {
+    init(api: APIClient, repository: AssistantRepository, defaults: UserDefaults = .standard) {
         self.api = api
         self.repository = repository
+        self.defaults = defaults
         draft = defaults.string(forKey: Keys.draft) ?? ""
         conversationId = defaults.string(forKey: Keys.conversation) ?? UUID().uuidString.lowercased()
         if let data = defaults.data(forKey: Keys.pending), let saved = try? JSONDecoder().decode(PendingTurn.self, from: data) {
@@ -104,6 +107,7 @@ final class AssistantStore: VoiceAssistant {
             conversationId = saved.conversationId
             phase = .unknown
         }
+        rebuild()
     }
 
     var isBusy: Bool {
@@ -205,7 +209,7 @@ final class AssistantStore: VoiceAssistant {
         guard !Task.isCancelled, !requestsStopped else { return nil }
         return PendingTurn(
             turnId: UUID().uuidString.lowercased(), conversationId: conversationId,
-            messageId: UUID().uuidString.lowercased(), text: String(text.prefix(4000)),
+            messageId: UUID().uuidString.lowercased(), text: text,
             transcriptionId: transcriptionId, revisesMessageId: nil,
             referenceInstant: Timestamp.format(Date()), timeZone: TimeZone.current.identifier,
             unsyncedAggregateIds: unsynced
@@ -224,6 +228,11 @@ final class AssistantStore: VoiceAssistant {
         pending = turn
         phase = .waiting
         rebuild()
+        if turn.text.utf16.count > 4000 {
+            phase = .refused
+            notice = "Le texte transcrit dépasse 4 000 caractères. Il est conservé : modifiez-le avant d’envoyer."
+            return true
+        }
         voiceSubmission = Task { [weak self] in
             guard let self else { return }
             await self.submit(turn)
@@ -235,6 +244,10 @@ final class AssistantStore: VoiceAssistant {
     func send(text override: String? = nil, transcriptionId: String? = nil) async {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestsStopped, !text.isEmpty, !isBusy, pending == nil else { return }
+        guard text.utf16.count <= 4000 else {
+            notice = "Le message dépasse 4 000 caractères. Scindez-le ou raccourcissez-le avant d’envoyer ; le brouillon est conservé."
+            return
+        }
         notice = nil
         phase = .preparing
         if let undoActionId = revising?.undoActionId {
@@ -250,7 +263,7 @@ final class AssistantStore: VoiceAssistant {
             turnId: UUID().uuidString.lowercased(),
             conversationId: conversationId,
             messageId: UUID().uuidString.lowercased(),
-            text: String(text.prefix(4000)),
+            text: text,
             transcriptionId: transcriptionId,
             revisesMessageId: revising?.messageId,
             referenceInstant: Timestamp.format(Date()),
@@ -300,8 +313,16 @@ final class AssistantStore: VoiceAssistant {
 
     /// Gives up on a request the server never received; its text goes back to the composer.
     func discardPending() {
-        guard let pending, phase == .notReceived || phase == .offline else { return }
-        if draft.isEmpty { draft = pending.text }
+        guard let pending, phase == .notReceived || phase == .offline || phase == .refused else { return }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = pending.text
+            notice = "Le message non envoyé est conservé dans le brouillon."
+        } else if draft != pending.text {
+            draft += "\n\n" + pending.text
+            notice = "Le message non envoyé a été ajouté à la fin du brouillon. Relisez les deux paragraphes avant d’envoyer."
+        } else {
+            notice = "Le message non envoyé est déjà présent dans le brouillon."
+        }
         forget()
         phase = .idle
     }
@@ -315,7 +336,7 @@ final class AssistantStore: VoiceAssistant {
             AccessibilityNotification.Announcement(Self.announcement(for: snapshot)).post()
         } catch let error as APIError {
             guard !Task.isCancelled, !requestsStopped else { return }
-            handle(error, for: turn)
+            handleSubmissionFailure(error, for: turn)
         } catch {
             guard !Task.isCancelled, !requestsStopped else { return }
             phase = .unknown
@@ -333,32 +354,39 @@ final class AssistantStore: VoiceAssistant {
         rebuild()
     }
 
-    private func handle(_ error: APIError, for turn: PendingTurn) {
+    /// Shared by actual HTTP submission and the recovery tests; never discards an unsent message.
+    func handleSubmissionFailure(_ error: APIError, for turn: PendingTurn) {
+        guard !requestsStopped, pending?.turnId == turn.turnId else { return }
         switch error {
         case .transport(let code) where Self.neverSent.contains(code):
             phase = .offline
         case .transport, .invalidResponse:
             phase = .unknown
-        case .http(_, .some("TRANSCRIPTION_UNKNOWN"), _, _, _, _) where turn.transcriptionId != nil:
-            // The transcript was erased (unused for 24 h): the same text goes as a written message.
-            forget()
-            phase = .idle
+        case .http(422, .some("TRANSCRIPTION_UNKNOWN"), _, _, _, _) where turn.transcriptionId != nil:
+            // This 422 guarantees no effect. Persist the complete replacement before starting any
+            // asynchronous work, preserving the original conversation and interpretation of dates.
+            let replacement = PendingTurn(
+                turnId: UUID().uuidString.lowercased(), conversationId: turn.conversationId,
+                messageId: UUID().uuidString.lowercased(), text: turn.text, transcriptionId: nil,
+                revisesMessageId: turn.revisesMessageId, referenceInstant: turn.referenceInstant,
+                timeZone: turn.timeZone, unsyncedAggregateIds: turn.unsyncedAggregateIds
+            )
+            remember(replacement)
+            phase = .waiting
             expiredTranscriptSubmission = Task { [weak self] in
                 guard let self, !Task.isCancelled, !self.requestsStopped else { return }
-                await self.send(text: turn.text)
+                await self.submit(replacement)
                 if !Task.isCancelled { self.expiredTranscriptSubmission = nil }
             }
+        case .http(let status, _, _, _, _, _) where status >= 500 || status == 408:
+            // A proxy/server failure may happen after commit: only GET can establish the result.
+            phase = .unknown
+            notice = "Le serveur n’a pas confirmé le résultat. Vérifiez-le avant de renvoyer. (HTTP \(status))"
         case .http(let status, let code, let retryAfter, _, let minimumVersion, _):
-            // Refused before any processing: nothing happened, the text goes back to the composer.
-            forget()
-            phase = .idle
-            if draft.isEmpty { draft = turn.text }
+            phase = .refused
             notice = Self.refusal(status: status, code: code, retryAfter: retryAfter, minimumVersion: minimumVersion)
-            if code == "CONVERSATION_NOT_FOUND" { newConversation() }
         case .unauthorized:
-            forget()
-            phase = .idle
-            if draft.isEmpty { draft = turn.text }
+            phase = .refused
             notice = "Cet iPhone n’est plus autorisé : voir Réglages."
         }
     }
@@ -552,7 +580,7 @@ final class AssistantStore: VoiceAssistant {
             return "Trop de demandes cette heure-ci. Réessayez dans \(minutes) min."
         case "ASSISTANT_BUDGET_EXCEEDED": return "Limite mensuelle de l’assistant atteinte. Les tâches restent utilisables."
         case "ASSISTANT_UNAVAILABLE": return "L’assistant n’est pas configuré sur le serveur."
-        case "CONVERSATION_NOT_FOUND": return "Cette conversation n’existe plus. Une nouvelle a été ouverte."
+        case "CONVERSATION_NOT_FOUND": return "Cette conversation n’existe plus. Modifiez le message, puis ouvrez une nouvelle conversation pour l’envoyer."
         case "REVISED_MESSAGE_UNKNOWN": return "Le message corrigé n’existe plus."
         case "INVALID_REFERENCE_INSTANT": return "L’heure de cet iPhone semble fausse. Vérifiez Réglages › Général › Date et heure."
         case "TRANSCRIPTION_UNKNOWN": return "La transcription n’est plus disponible."
