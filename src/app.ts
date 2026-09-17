@@ -3,11 +3,12 @@ import { join } from 'node:path';
 import fastifyMultipart from '@fastify/multipart';
 import Fastify, { LogController, type FastifySchema, type RouteOptions } from 'fastify';
 import type { Pool } from 'pg';
-import { AssistantService, registerAssistantRoutes, type AssistantLimits, type ReasoningProvider } from './modules/assistant/index.js';
+import { AssistantService, DEFAULT_LIMITS, registerAssistantRoutes, type AssistantLimits, type ReasoningProvider } from './modules/assistant/index.js';
 import { registerAuthRoutes, type AuthConfig } from './modules/auth/index.js';
 import { registerExportRoutes } from './modules/export/index.js';
+import { registerDiagnosticsRoutes } from './modules/maintenance/index.js';
 import { registerSyncRoutes } from './modules/sync/index.js';
-import { MAX_AUDIO_BYTES, registerVoiceRoutes, VoiceService, type TranscriptionProvider, type VoiceLimits } from './modules/voice/index.js';
+import { DEFAULT_VOICE_LIMITS, MAX_AUDIO_BYTES, registerVoiceRoutes, VoiceService, type TranscriptionProvider, type VoiceLimits } from './modules/voice/index.js';
 import { registerErrorHandler } from './errors.js';
 
 export const DEFAULT_MINIMUM_CLIENT_VERSION = '0.1.0';
@@ -108,6 +109,19 @@ export async function buildApp(options: BuildAppOptions) {
     ...(options.exportIntervalMs === undefined ? {} : { intervalMs: options.exportIntervalMs }),
     ...(options.sync?.clock ? { clock: options.sync.clock } : {}),
   });
+  registerDiagnosticsRoutes(app, {
+    pool: options.pool, auth,
+    minimumClientVersion: options.sync?.minimumClientVersion ?? DEFAULT_MINIMUM_CLIENT_VERSION,
+    assistant: {
+      provider: options.assistant?.provider ?? null,
+      monthlyTokenBudget: options.assistant?.limits?.monthlyTokenBudget ?? DEFAULT_LIMITS.monthlyTokenBudget,
+    },
+    transcription: {
+      provider: options.voice?.provider ?? null,
+      monthlyMinutes: options.voice?.limits?.monthlyMinutes ?? DEFAULT_VOICE_LIMITS.monthlyMinutes,
+    },
+    ...(options.sync?.clock ? { clock: options.sync.clock } : {}),
+  });
   app.get('/api/v1/health/live', { schema: liveSchema }, async () => ({ status: 'alive' }));
   app.get('/api/v1/health/ready', { schema: { response: { 200: readyBody, 503: readyBody } } }, async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
@@ -128,7 +142,7 @@ export async function buildApp(options: BuildAppOptions) {
     voice,
     openApi: {
       openapi: '3.1.0',
-      info: { title: 'Planner backend — étape 3', version: '0.3.1', description: 'Auth, santé, upload des commandes de synchronisation, export, assistant et messages vocaux. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
+      info: { title: 'Planner backend', version: '0.4.0', description: 'Auth, santé, upload des commandes de synchronisation, export, diagnostics, assistant et messages vocaux. La réplication vers l’iPhone passe par PowerSync, hors de cette API.' },
       paths,
       components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
     },

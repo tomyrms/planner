@@ -55,6 +55,7 @@ function walk(data: Buffer, box: Box, depth: number, visit: (box: Box, path: str
 }
 
 function headerDuration(data: Buffer, box: Box): number {
+  if (box.end - box.body < 4) throw new AudioRejected('AUDIO_INVALID', 'Short header');
   const version = data.readUInt8(box.body);
   if (version === 1) {
     if (box.end - box.body < 32) throw new AudioRejected('AUDIO_INVALID', 'Short header');
@@ -63,11 +64,135 @@ function headerDuration(data: Buffer, box: Box): number {
     if (timescale === 0) throw new AudioRejected('AUDIO_INVALID', 'Zero timescale');
     return Math.round(duration * 1000 / timescale);
   }
+  if (version !== 0) throw new AudioRejected('AUDIO_INVALID', 'Unsupported duration header version');
   if (box.end - box.body < 20) throw new AudioRejected('AUDIO_INVALID', 'Short header');
   const timescale = data.readUInt32BE(box.body + 12);
   const duration = data.readUInt32BE(box.body + 16);
   if (timescale === 0) throw new AudioRejected('AUDIO_INVALID', 'Zero timescale');
   return Math.round(duration * 1000 / timescale);
+}
+
+interface Descriptor { tag: number; body: number; end: number }
+
+/** ISO/IEC 14496-1 descriptor sizes have at most four 7-bit groups, including padded encodings. */
+function descriptors(data: Buffer, from: number, to: number): Descriptor[] {
+  const found: Descriptor[] = [];
+  let offset = from;
+  while (offset < to) {
+    const tag = data[offset++]!;
+    let length = 0;
+    let complete = false;
+    for (let group = 0; group < 4; group++) {
+      if (offset >= to) throw new AudioRejected('AUDIO_INVALID', 'Truncated descriptor length');
+      const byte = data[offset++]!;
+      length = length * 128 + (byte & 0x7f);
+      if ((byte & 0x80) === 0) { complete = true; break; }
+    }
+    if (!complete || length > to - offset) throw new AudioRejected('AUDIO_INVALID', 'Descriptor size out of bounds');
+    found.push({ tag, body: offset, end: offset + length });
+    offset += length;
+  }
+  return found;
+}
+
+function oneDescriptor(list: Descriptor[], tag: number): Descriptor {
+  const matches = list.filter((descriptor) => descriptor.tag === tag);
+  if (matches.length !== 1) throw new AudioRejected('AUDIO_INVALID', 'Expected one audio descriptor');
+  return matches[0]!;
+}
+
+/** Codec configuration, not the legacy sample-entry channel count, describes MPEG-4 AAC channels.
+ * References: Apple QTFF Sound sample data (mp4a / wave / esds), FFmpeg libavformat/isom.c and
+ * libavcodec/mpeg4audio.c. This is a bounded structural check, not an AAC sample decoder.
+ */
+function aacChannels(data: Buffer, esds: Box): number {
+  if (esds.end - esds.body < 4 || data.readUInt32BE(esds.body) !== 0) {
+    throw new AudioRejected('AUDIO_INVALID', 'Unsupported elementary stream header');
+  }
+  const stream = oneDescriptor(descriptors(data, esds.body + 4, esds.end), 0x03);
+  if (stream.end - stream.body < 3) throw new AudioRejected('AUDIO_INVALID', 'Short elementary stream descriptor');
+  const flags = data[stream.body + 2]!;
+  let offset = stream.body + 3;
+  if (flags & 0x80) offset += 2; // dependsOn_ES_ID
+  if (flags & 0x40) {
+    if (offset >= stream.end) throw new AudioRejected('AUDIO_INVALID', 'Short stream URL');
+    offset += 1 + data[offset]!;
+  }
+  if (flags & 0x20) offset += 2; // OCR_ES_ID
+  if (offset > stream.end) throw new AudioRejected('AUDIO_INVALID', 'Short elementary stream flags');
+  const decoder = oneDescriptor(descriptors(data, offset, stream.end), 0x04);
+  if (decoder.end - decoder.body < 13) throw new AudioRejected('AUDIO_INVALID', 'Short decoder descriptor');
+  // MPEG-4 audio or MPEG-2 AAC, with streamType AudioStream (5) and its required reserved bit.
+  if (![0x40, 0x66, 0x67, 0x68].includes(data[decoder.body]!) || (data[decoder.body + 1]! >> 2) !== 5
+      || (data[decoder.body + 1]! & 1) !== 1) throw new AudioRejected('AUDIO_INVALID', 'Expected an AAC decoder');
+  const config = oneDescriptor(descriptors(data, decoder.body + 13, decoder.end), 0x05);
+  let bit = config.body * 8;
+  const endBit = config.end * 8;
+  const read = (count: number): number => {
+    if (bit + count > endBit) throw new AudioRejected('AUDIO_INVALID', 'Truncated AudioSpecificConfig');
+    let value = 0;
+    for (let index = 0; index < count; index++, bit++) value = value * 2 + ((data[Math.floor(bit / 8)]! >> (7 - bit % 8)) & 1);
+    return value;
+  };
+  const objectType = () => { const type = read(5); return type === 31 ? 32 + read(6) : type; };
+  const frequency = () => {
+    const index = read(4);
+    if (index === 15) {
+      if (read(24) === 0) throw new AudioRejected('AUDIO_INVALID', 'Zero AAC frequency');
+    } else if (index > 12) throw new AudioRejected('AUDIO_INVALID', 'Reserved AAC frequency');
+  };
+  let type = objectType();
+  frequency();
+  const channels = read(4);
+  // Program Config Elements (0) and reserved configurations cannot prove a mono stream here.
+  if (channels === 0 || [8, 9, 10, 15].includes(channels)) throw new AudioRejected('AUDIO_INVALID', 'Unsupported AAC channel configuration');
+  if (channels !== 1 || type === 29) throw new AudioRejected('AUDIO_NOT_MONO', 'Expected mono audio');
+  const explicitSbr = type === 5;
+  if (explicitSbr) { frequency(); type = objectType(); }
+  if (![1, 2, 3, 4].includes(type)) throw new AudioRejected('AUDIO_INVALID', 'Unsupported AAC object type');
+  read(1); // frameLengthFlag
+  if (read(1)) read(14); // dependsOnCoreCoder / coreCoderDelay
+  if (read(1) && read(1)) throw new AudioRejected('AUDIO_INVALID', 'Unsupported AAC extension');
+  // Implicit HE-AAC/HE-AACv2 may follow a plain AAC config. Parametric stereo turns a mono core
+  // into stereo output; never accept it merely because channelConfiguration was 1.
+  if (!explicitSbr && endBit - bit >= 11) {
+    const extensionStart = bit;
+    if (read(11) === 0x2b7) {
+      if (objectType() !== 5) throw new AudioRejected('AUDIO_INVALID', 'Unsupported AAC sync extension');
+      if (read(1)) frequency();
+      if (endBit - bit >= 12) {
+        const stereoStart = bit;
+        if (read(11) === 0x548) {
+          if (read(1)) throw new AudioRejected('AUDIO_NOT_MONO', 'Parametric stereo is not mono');
+        } else bit = stereoStart;
+      }
+    } else {
+      bit = extensionStart;
+    }
+  }
+  // Remaining bits are padding; unknown/truncated extensions are not evidence of mono audio.
+  while (bit < endBit) if (read(1)) throw new AudioRejected('AUDIO_INVALID', 'Unexpected AAC configuration bits');
+  return channels;
+}
+
+function sampleChannels(data: Buffer, entry: Box): number {
+  if (entry.type !== 'mp4a') throw new AudioRejected('AUDIO_INVALID', 'Expected AAC audio');
+  if (entry.end - entry.body < 28) throw new AudioRejected('AUDIO_INVALID', 'Short audio sample entry');
+  const version = data.readUInt16BE(entry.body + 8);
+  if (version !== 0 && version !== 1) throw new AudioRejected('AUDIO_INVALID', 'Unsupported audio sample entry version');
+  const headerSize = version === 1 ? 44 : 28;
+  if (entry.end - entry.body < headerSize) throw new AudioRejected('AUDIO_INVALID', 'Short versioned audio sample entry');
+  const configs: Box[] = [];
+  const find = (from: number, to: number, depth: number) => {
+    if (depth > MAX_DEPTH) throw new AudioRejected('AUDIO_INVALID', 'Audio extensions nested too deeply');
+    for (const child of boxes(data, from, to)) {
+      if (child.type === 'esds') configs.push(child);
+      else if (child.type === 'wave') find(child.body, child.end, depth + 1);
+    }
+  };
+  find(entry.body + headerSize, entry.end, 0);
+  if (configs.length !== 1) throw new AudioRejected('AUDIO_INVALID', 'Expected one AAC configuration');
+  return aacChannels(data, configs[0]!);
 }
 
 export function inspectM4a(data: Buffer, declaredDurationMs: number): AudioInfo {
@@ -93,11 +218,10 @@ export function inspectM4a(data: Buffer, declaredDurationMs: number): AudioInfo 
     }
     if (box.type === 'stsd' && parent === 'stbl') {
       if (box.end - box.body < 8) throw new AudioRejected('AUDIO_INVALID', 'Short sample description');
-      for (const entry of boxes(data, box.body + 8, box.end)) {
-        // Audio sample entry: 6 reserved, 2 index, 8 version/revision/vendor, then the channel count.
-        if (entry.end - entry.body < 18) throw new AudioRejected('AUDIO_INVALID', 'Short sample entry');
-        formats.push({ format: entry.type, channels: data.readUInt16BE(entry.body + 16) });
-      }
+      if (data.readUInt32BE(box.body) !== 0) throw new AudioRejected('AUDIO_INVALID', 'Unsupported sample description version');
+      const entries = boxes(data, box.body + 8, box.end);
+      if (data.readUInt32BE(box.body + 4) !== entries.length) throw new AudioRejected('AUDIO_INVALID', 'Sample entry count mismatch');
+      for (const entry of entries) formats.push({ format: entry.type, channels: sampleChannels(data, entry) });
     }
   }, []);
   if (handlers.length !== 1 || handlers[0] !== 'soun') throw new AudioRejected('AUDIO_INVALID', 'Expected exactly one audio track');

@@ -2,6 +2,7 @@ import { buildApp } from './app.js';
 import { loadConfig, type AssistantProviderConfig, type TranscriptionProviderConfig } from './config.js';
 import { createPool } from './infrastructure/db/pool.js';
 import { DeepSeekProvider, RuleBasedProvider, type ReasoningProvider } from './modules/assistant/index.js';
+import { purgeIfDue } from './modules/maintenance/index.js';
 import { OpenAITranscriptionProvider, SimulatedTranscriptionProvider, type TranscriptionProvider } from './modules/voice/index.js';
 
 function providerFor(config: AssistantProviderConfig): ReasoningProvider | null {
@@ -46,11 +47,21 @@ const cleanAudio = () => voice.cleanup().catch(() => app.log.error({ code: 'AUDI
 await cleanAudio();
 const audioCleanup = setInterval(() => { void cleanAudio(); }, 3_600_000);
 audioCleanup.unref();
+// The trash is purged once a day (30 days). Replay proofs stay until stale offline queues can be recovered safely.
+const purge = () => purgeIfDue(pool, new Date())
+  .then((counts) => { if (counts) app.log.info({ code: 'PURGE_DONE', ...counts }, 'Purge done'); })
+  .catch(() => app.log.error({ code: 'PURGE_FAILED' }, 'Purge failed'));
+const purgeCheck = setInterval(() => { void purge(); }, 3_600_000);
+purgeCheck.unref();
+const firstPurge = setTimeout(() => { void purge(); }, 60_000);
+firstPurge.unref();
 async function shutdown() {
   if (stopping) return;
   stopping = true;
   clearInterval(maintenance);
   clearInterval(audioCleanup);
+  clearInterval(purgeCheck);
+  clearTimeout(firstPurge);
   await voice.shutdown();
   await app.close();
   await pool.end();

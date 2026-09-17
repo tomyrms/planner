@@ -138,7 +138,12 @@ describe('voice HTTP routes', () => {
     const off = await upload(voice(randomUUID()), { app: disabled });
     expect(off.statusCode).toBe(503);
     expect(off.json().error.code).toBe('TRANSCRIPTION_UNAVAILABLE');
-    expect((await disabled.app.inject({ method: 'GET', url: `${URL}/${randomUUID()}`, headers: headers() })).statusCode).toBe(503);
+    expect((await disabled.app.inject({ method: 'GET', url: `${URL}/${randomUUID()}`, headers: headers() })).statusCode).toBe(404);
+    const completedId = (await db.pool.query("SELECT id FROM transcriptions WHERE status = 'completed' AND device_id = $1 LIMIT 1", [tokens.deviceId])).rows[0].id as string;
+    const recovered = await disabled.app.inject({ method: 'GET', url: `${URL}/${completedId}`, headers: headers() });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json().status).toBe('completed');
+    expect((await disabled.app.inject({ method: 'DELETE', url: `${URL}/${completedId}`, headers: headers() })).statusCode).toBe(200);
     expect(await leftovers()).toEqual([]);
     expect(provider.requests.length).toBeLessThanOrEqual(3);
   });
@@ -154,6 +159,8 @@ describe('voice HTTP routes', () => {
       [[['transcriptionId', randomUUID()], ['durationMs', '3000'], ['userId', randomUUID()], ['audio', { data: mono }]], 400, 'INVALID_REQUEST'],
       [[['transcriptionId', randomUUID()], ['durationMs', '3000']], 400, 'INVALID_REQUEST'],
       [[['transcriptionId', randomUUID()], ['durationMs', '3000'], ['file', { data: mono }]], 400, 'INVALID_REQUEST'],
+      [[['audio', { data: mono }], ['transcriptionId', randomUUID()], ['durationMs', '3000'], ['durationMs', '3000']], 400, 'INVALID_REQUEST'],
+      [[['audio', { data: mono }], ['transcriptionId', randomUUID()], ['durationMs', '3000' + ' '.repeat(120)]], 400, 'INVALID_REQUEST'],
       [[['transcriptionId', randomUUID()], ['durationMs', '3000'], ['audio', { data: mono }], ['audio', { data: mono }]], 400, 'INVALID_REQUEST'],
       // The declared name and MIME type are ignored: only the content counts.
       [[['transcriptionId', randomUUID()], ['durationMs', '3000'], ['audio', { data: Buffer.from('#!/bin/sh\necho hi\n'), name: 'voice.m4a', type: 'audio/mp4' }]], 422, 'AUDIO_INVALID'],
@@ -179,6 +186,23 @@ describe('voice HTTP routes', () => {
     const response = await upload(voice(randomUUID(), huge));
     expect(response.statusCode).toBe(413);
     expect(response.json().error.code).toBe('AUDIO_TOO_LARGE');
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it('accepts a real HTTP upload larger than the JSON body limit', async () => {
+    const padding = Buffer.alloc(1_100_008);
+    padding.writeUInt32BE(padding.length, 0);
+    padding.write('free', 4, 'latin1');
+    const data = Buffer.concat([mono, padding]);
+    const id = randomUUID();
+    const body = await multipart(voice(id, data));
+    const address = await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const response = await fetch(address + URL, {
+      method: 'POST', headers: { ...headers(), 'content-type': body.contentType },
+      body: new Uint8Array(body.payload), signal: AbortSignal.timeout(5000),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ transcriptionId: id });
     expect(await leftovers()).toEqual([]);
   });
 

@@ -8,7 +8,14 @@ nonisolated struct TranscriptionSnapshot: Decodable, Sendable, Equatable {
     let errorCode: String?
 }
 
-extension APIClient {
+/// The voice flow can recover independently of the transport and is tested without a provider call.
+nonisolated protocol VoiceTranscriptionAPI: Sendable {
+    func uploadVoice(transcriptionId: String, durationMs: Int, file: URL) async throws -> TranscriptionSnapshot
+    func transcription(_ id: String) async throws -> TranscriptionSnapshot
+    func abandonTranscription(_ id: String) async throws
+}
+
+extension APIClient: VoiceTranscriptionAPI {
     /// `POST /assistant/transcriptions`: multipart with the identifier, the duration and the audio file.
     func uploadVoice(transcriptionId: String, durationMs: Int, file: URL) async throws -> TranscriptionSnapshot {
         let boundary = "planner-" + UUID().uuidString

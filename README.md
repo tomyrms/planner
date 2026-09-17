@@ -11,7 +11,7 @@ Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la 
 | Partie | Contenu |
 |---|---|
 | `src/modules/time` | Valeurs temporelles (date flottante, heure + fuseau, changements d'heure), récurrence fixe et après complétion, identités d'occurrence, plan de rappels. |
-| `fixtures/time` | Cas littéraux JSON que le futur client Swift devra aussi passer. |
+| `fixtures/time` | Cas littéraux JSON partagés par les tests TypeScript et Swift. |
 | `src/modules/sync` | `POST /api/v1/sync/mutations` : exécuteur de commandes (verrou, reçu, précondition, effet, révision) et handlers par agrégat (tâches, occurrences et séries, rappels, listes). C'est le service de domaine unique, que l'assistant utilise aussi (`executePlan`). |
 | `fixtures/sync` | Scénarios de conflit JSON (commandes → résultat attendu), exécutés contre PostgreSQL. |
 | `src/modules/domain` | Dérivés partagés : colonnes temporelles, bases de rappel, texte de recherche normalisé. |
@@ -24,7 +24,11 @@ Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la 
 | `powersync/` | Configuration du service PowerSync et Sync Streams (lecture seule, filtrée par utilisateur). |
 | `src/infrastructure/db` | Runner de migrations, provisionnement PowerSync, règles de sauvegarde, rotation de génération. |
 
-Pas encore : `GET /diagnostics`, purge planifiée, import d'un export (avant l'étape 9), client iPhone. Les adaptateurs DeepSeek et OpenAI n'ont jamais appelé le vrai service (pas de clé).
+L'app iPhone contient maintenant les écrans de tâches, l'agenda et le calendrier, les séries, les rappels locaux, l'assistant et les messages vocaux. Voir [`ios/README.md`](ios/README.md) pour l'installation et les validations restantes.
+
+`GET /api/v1/diagnostics` est authentifié et expose uniquement l'état technique et les compteurs. La corbeille est purgée après 30 jours, une fois par jour ; le journal IA reste tant que la tâche ou sa conversation existe. **Reçus et tombstones restent conservés** tant que la récupération des files hors ligne de plus de 90 jours n'est pas implémentée : les effacer maintenant permettrait de rejouer d'anciennes commandes.
+
+Restent notamment l'import d'un export, la récupération guidée de la file et les validations sur l'iPhone. Les 24 cas DeepSeek ont été réussis au moins une fois lors des évaluations du 16 septembre ; cela ne constitue pas une garantie sur toutes les demandes réelles.
 
 ## Démarrer (Windows)
 
@@ -63,7 +67,9 @@ Réglages : `ASSISTANT_PROVIDER` (`deepseek`, `rules`, `disabled`), `DEEPSEEK_MO
 
 ## Voix
 
-Sans `OPENAI_API_KEY`, le développement renvoie une transcription simulée (texte marqué « [voix simulée] », aucun audio ne sort de la machine) ; en production sans clé, les routes vocales répondent 503. L'audio vit dans `AUDIO_DIR` (tmpfs du conteneur), jamais dans une sauvegarde, et disparaît dès la fin de la transcription.
+Sans `OPENAI_API_KEY`, le développement renvoie une transcription simulée (texte marqué « [voix simulée] », aucun audio ne sort de la machine) ; en production sans clé, les nouveaux envois vocaux répondent 503. La lecture d'un résultat existant et l'abandon restent disponibles. L'audio vit dans `AUDIO_DIR` (tmpfs du conteneur), jamais dans une sauvegarde. Le résultat est persisté avant suppression de l'audio ; un échec de suppression est repris par le nettoyage.
+
+Le POST attend au plus une seconde le fournisseur, puis rend un état consultable par GET. Une réponse réseau perdue se reprend par GET avec le même identifiant. L'iPhone conserve le texte et les identifiants du tour avant de le remettre à l'assistant ; l'attente peut être mise en pause. Les erreurs de validation sont journalisées par code technique, sans audio ni texte.
 
 Réglages : `TRANSCRIPTION_PROVIDER` (`openai`, `simulated`, `disabled`), `OPENAI_TRANSCRIPTION_MODEL` (`gpt-transcribe`), `TRANSCRIPTION_MONTHLY_MINUTES` (600), `AUDIO_DIR`.
 

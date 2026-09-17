@@ -33,6 +33,18 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           xcrun swift --version
 
+      - name: Generate synthetic Apple AAC fixture
+        run: |
+          mkdir -p ios/build
+          xcrun swift ios/scripts/generate-audio-fixture.swift ios/build/apple-tone-3s-mono.m4a
+
+      - name: Keep synthetic audio fixture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apple-aac-fixture
+          path: ios/build/apple-tone-3s-mono.m4a
+          retention-days: 7
+
       - name: Build for any iPhone, unsigned, warnings as errors
         working-directory: ios
         run: |

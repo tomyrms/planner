@@ -12,7 +12,7 @@ export const DEFAULT_VOICE_LIMITS = {
   /** Monthly cap of transcribed minutes (04_Backend/07_Cost_Model.md). */
   monthlyMinutes: 600,
   /** Longer transcriptions answer "transcribing" and finish in the background. */
-  inlineWaitMs: 20_000,
+  inlineWaitMs: 1_000,
   providerTimeoutMs: 60_000,
   audioTtlMs: 24 * 60 * 60_000,
   /** A transcription left "received" or "transcribing" this long without a running job was interrupted. */
@@ -53,6 +53,10 @@ async function transaction<T>(pool: pg.Pool, work: (client: pg.PoolClient) => Pr
 
 const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref(); });
 
+async function lockTranscription(client: pg.PoolClient, id: string): Promise<void> {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:transcription:' || $1::uuid::text, 0))", [id]);
+}
+
 /** Voice messages (03_iOS/04_Audio_Transcription.md): the text is kept, the audio never is. */
 export class VoiceService {
   private readonly jobs = new Map<string, Job>();
@@ -86,8 +90,25 @@ export class VoiceService {
   }
 
   async snapshot(userId: string, transcriptionId: string): Promise<Record<string, unknown>> {
-    const { rows: [row] } = await this.pool.query(`SELECT id, status, text, languages, error_code, duration_ms, created_at, completed_at, audio_deleted_at
-      FROM transcriptions WHERE id = $1 AND user_id = $2`, [transcriptionId.toLowerCase(), userId]);
+    const id = transcriptionId.toLowerCase();
+    const select = `SELECT id, status, text, languages, error_code, duration_ms, created_at, completed_at, audio_deleted_at, updated_at
+      FROM transcriptions WHERE id = $1 AND user_id = $2`;
+    let { rows: [row] } = await this.pool.query(select, [id, userId]);
+    const now = this.clock();
+    if (row && OPEN_STATUSES.includes(row.status) && !this.jobs.has(id) && now.getTime() - new Date(row.updated_at).getTime() >= this.limits.staleMs) {
+      // Polling after a server restart must eventually expose a retryable failure, even before hourly cleanup runs.
+      const attempt = await transaction(this.pool, async (client) => {
+        await lockTranscription(client, id);
+        const { rows: [interrupted] } = await client.query(`UPDATE transcriptions SET status = 'failed', error_code = 'INTERRUPTED', updated_at = $3
+          WHERE id = $1 AND user_id = $2 AND status = ANY($4) AND updated_at <= $3::timestamptz - make_interval(secs => $5)
+          RETURNING attempts`, [id, userId, now, OPEN_STATUSES, this.limits.staleMs / 1000]);
+        return interrupted?.attempts as number | undefined;
+      });
+      if (attempt !== undefined) await this.deleteAudio(id, attempt).catch((error) => {
+        this.log({ event: 'transcription_audio_cleanup_error', transcriptionId: id, code: (error as { code?: string }).code ?? 'INTERNAL_ERROR' });
+      });
+      ({ rows: [row] } = await this.pool.query(select, [id, userId]));
+    }
     if (!row || row.status === 'erased') throw new AssistantError('TRANSCRIPTION_NOT_FOUND', 404, 'Unknown transcription.');
     return {
       transcriptionId: row.id,
@@ -116,43 +137,45 @@ export class VoiceService {
       }
       const now = this.clock();
       const decision = await transaction(this.pool, async (client) => {
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:transcription:' || $1::uuid::text, 0))", [id]);
-        const { rows: [existing] } = await client.query('SELECT user_id, audio_sha256, status, attempts FROM transcriptions WHERE id = $1', [id]);
+        // Reserve the budget before releasing this lock: simultaneous uploads must see one another's attempts.
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended('planner:voice-budget:' || $1::uuid::text, 0))", [identity.userId]);
+        await lockTranscription(client, id);
+        const { rows: [existing] } = await client.query('SELECT user_id, audio_sha256, duration_ms, status, attempts, updated_at FROM transcriptions WHERE id = $1', [id]);
         if (existing) {
-          if (existing.user_id !== identity.userId || existing.audio_sha256 !== upload.sha256) {
+          if (existing.user_id !== identity.userId || existing.audio_sha256 !== upload.sha256 || existing.duration_ms !== upload.durationMs) {
             throw new AssistantError('IDEMPOTENCY_KEY_REUSED', 409, 'This transcription identifier was already used for another file.');
           }
           if (existing.status === 'abandoned') throw new AssistantError('TRANSCRIPTION_ABANDONED', 422, 'This voice message was abandoned.');
           if (existing.status === 'erased') throw new AssistantError('TRANSCRIPTION_ERASED', 422, 'This voice message was deleted.');
-          if (existing.status === 'completed' || this.jobs.has(id)) return 'join';
-          // A failure, or a job cut by a restart, is retried with the same file.
-          if (existing.status === 'failed' && existing.attempts >= this.limits.maxAttempts) {
+          if (existing.status === 'completed' || this.jobs.has(id)) return null;
+          // Another instance may own this job. Its absence from our in-memory map is not proof of a restart.
+          if (OPEN_STATUSES.includes(existing.status) && now.getTime() - new Date(existing.updated_at).getTime() < this.limits.staleMs) return null;
+          if (existing.attempts >= this.limits.maxAttempts) {
             throw new AssistantError('TRANSCRIPTION_FAILED', 422, 'Transcription failed; write the message instead.');
           }
           await this.checkBudget(client, identity.userId, upload.durationMs, now);
-          await client.query(`UPDATE transcriptions SET status = 'received', error_code = NULL, audio_deleted_at = NULL, updated_at = $2
+          await client.query(`UPDATE transcriptions SET status = 'received', attempts = attempts + 1, error_code = NULL, audio_deleted_at = NULL, updated_at = $2
             WHERE id = $1`, [id, now]);
-          return 'start';
+        } else {
+          const scope = identity.deviceId ? 'device_id = $2' : 'user_id = $2';
+          const hour = await client.query(`SELECT count(*)::int AS n, min(created_at) AS oldest FROM transcriptions
+            WHERE created_at > $1::timestamptz - interval '1 hour' AND ${scope}`, [now, identity.deviceId ?? identity.userId]);
+          if (hour.rows[0].n >= this.limits.perHour) {
+            const retryAfterSeconds = Math.max(1, Math.ceil((new Date(hour.rows[0].oldest).getTime() + 3_600_000 - now.getTime()) / 1000));
+            throw new AssistantError('RATE_LIMITED', 429, 'Too many voice messages this hour.', { retryAfterSeconds });
+          }
+          await this.checkBudget(client, identity.userId, upload.durationMs, now);
+          await client.query(`INSERT INTO transcriptions (id, user_id, device_id, duration_ms, byte_size, audio_sha256, provider, model, attempts, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $9)`,
+          [id, identity.userId, identity.deviceId, upload.durationMs, upload.byteSize, upload.sha256, this.provider!.name, this.provider!.model, now]);
         }
-        const scope = identity.deviceId ? 'device_id = $2' : 'user_id = $2';
-        const hour = await client.query(`SELECT count(*)::int AS n, min(created_at) AS oldest FROM transcriptions
-          WHERE created_at > $1::timestamptz - interval '1 hour' AND ${scope}`, [now, identity.deviceId ?? identity.userId]);
-        if (hour.rows[0].n >= this.limits.perHour) {
-          const retryAfterSeconds = Math.max(1, Math.ceil((new Date(hour.rows[0].oldest).getTime() + 3_600_000 - now.getTime()) / 1000));
-          throw new AssistantError('RATE_LIMITED', 429, 'Too many voice messages this hour.', { retryAfterSeconds });
-        }
-        await this.checkBudget(client, identity.userId, upload.durationMs, now);
-        await client.query(`INSERT INTO transcriptions (id, user_id, device_id, duration_ms, byte_size, audio_sha256, provider, model, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
-        [id, identity.userId, identity.deviceId, upload.durationMs, upload.byteSize, upload.sha256, this.provider!.name, this.provider!.model, now]);
-        return 'start';
-      });
-      if (decision === 'start') {
+        // Keep the identifier locked until its file is in place. A duplicate must never replace an active recording.
         await rename(upload.path, this.audioPath(id));
-        await chmod(this.audioPath(id), 0o600).catch(() => undefined);
         keepTemporary = true;
-        this.start(identity.userId, id);
-      }
+        await chmod(this.audioPath(id), 0o600).catch(() => undefined);
+        return Number(existing?.attempts ?? 0) + 1;
+      });
+      if (decision !== null) this.start(identity.userId, id, decision);
       const job = this.jobs.get(id);
       if (job) await Promise.race([job.promise, sleep(this.limits.inlineWaitMs)]);
       return await this.snapshot(identity.userId, id);
@@ -170,9 +193,9 @@ export class VoiceService {
     }
   }
 
-  private start(userId: string, id: string): void {
+  private start(userId: string, id: string, attempt: number): void {
     const abort = new AbortController();
-    const promise = this.run(userId, id, abort.signal)
+    const promise = this.run(userId, id, attempt, abort.signal)
       .catch((error) => this.log({ event: 'transcription_error', transcriptionId: id, code: (error as { code?: string }).code ?? 'INTERNAL_ERROR' }))
       .finally(() => this.jobs.delete(id));
     this.jobs.set(id, { promise, abort });
@@ -184,10 +207,10 @@ export class VoiceService {
     return rows.map((row) => row.name);
   }
 
-  private async run(userId: string, id: string, signal: AbortSignal): Promise<void> {
+  private async run(userId: string, id: string, attempt: number, signal: AbortSignal): Promise<void> {
     const started = Date.now();
-    const claimed = await this.pool.query(`UPDATE transcriptions SET status = 'transcribing', attempts = attempts + 1, updated_at = $2
-      WHERE id = $1 AND status = 'received' AND attempts < 10 RETURNING id`, [id, this.clock()]);
+    const claimed = await this.pool.query(`UPDATE transcriptions SET status = 'transcribing', updated_at = $2
+      WHERE id = $1 AND status = 'received' AND attempts = $3 AND attempts <= $4 RETURNING id`, [id, this.clock(), attempt, this.limits.maxAttempts]);
     if (!claimed.rowCount) return;
     let outcome: { status: 'completed' | 'failed'; text?: string; languages?: string[]; code?: string } = { status: 'failed', code: 'INTERNAL_ERROR' };
     try {
@@ -200,36 +223,52 @@ export class VoiceService {
       outcome = text.length === 0 ? { status: 'failed', code: 'EMPTY_TRANSCRIPT' } : { status: 'completed', text, languages: result.languages };
     } catch (error) {
       outcome = { status: 'failed', code: error instanceof TranscriptionError ? error.code : 'INTERNAL_ERROR' };
-    } finally {
-      await rm(this.audioPath(id), { force: true });
+    }
+    // Persist the result before deleting its source. A disk cleanup error must not lose a completed transcript.
+    await transaction(this.pool, async (client) => {
+      await lockTranscription(client, id);
       const now = this.clock();
-      // An abandon during the call wins: its status is kept, only the audio deletion is recorded.
-      await this.pool.query(`UPDATE transcriptions SET
+      // An abandon or a later attempt wins; a delayed result cannot overwrite either.
+      await client.query(`UPDATE transcriptions SET
           status = CASE WHEN status = 'transcribing' THEN $2 ELSE status END,
           text = CASE WHEN status = 'transcribing' THEN $3 ELSE text END,
           languages = CASE WHEN status = 'transcribing' THEN $4::text[] ELSE languages END,
           error_code = CASE WHEN status = 'transcribing' THEN $5 ELSE error_code END,
           completed_at = CASE WHEN status = 'transcribing' AND $2 = 'completed' THEN $6::timestamptz ELSE completed_at END,
-          updated_at = CASE WHEN status = 'transcribing' THEN $6 ELSE updated_at END,
-          audio_deleted_at = $6
-        WHERE id = $1`,
-      [id, outcome.status, outcome.text ?? null, outcome.languages ?? [], outcome.code ?? null, now]);
-      this.log({ event: 'transcription', transcriptionId: id, status: outcome.status, code: outcome.code ?? null, durationMs: Date.now() - started });
-    }
+          updated_at = CASE WHEN status = 'transcribing' THEN $6 ELSE updated_at END
+        WHERE id = $1 AND attempts = $7`,
+      [id, outcome.status, outcome.text ?? null, outcome.languages ?? [], outcome.code ?? null, now, attempt]);
+    });
+    await this.deleteAudio(id, attempt).catch((error) => {
+      this.log({ event: 'transcription_audio_cleanup_error', transcriptionId: id, code: (error as { code?: string }).code ?? 'INTERNAL_ERROR' });
+    });
+    this.log({ event: 'transcription', transcriptionId: id, status: outcome.status, code: outcome.code ?? null, durationMs: Date.now() - started });
+  }
+
+  private async deleteAudio(id: string, attempt: number): Promise<void> {
+    await transaction(this.pool, async (client) => {
+      await lockTranscription(client, id);
+      const { rows: [row] } = await client.query('SELECT attempts, status FROM transcriptions WHERE id = $1', [id]);
+      if (!row || row.attempts !== attempt || OPEN_STATUSES.includes(row.status)) return;
+      await rm(this.audioPath(id), { force: true });
+      await client.query('UPDATE transcriptions SET audio_deleted_at = COALESCE(audio_deleted_at, $2) WHERE id = $1', [id, this.clock()]);
+    });
   }
 
   /** DELETE: the server audio is removed at once; a text already transcribed stays usable. */
   async abandon(identity: Identity, transcriptionId: string): Promise<Record<string, unknown>> {
     const id = transcriptionId.toLowerCase();
-    const { rows: [row] } = await this.pool.query('SELECT status FROM transcriptions WHERE id = $1 AND user_id = $2', [id, identity.userId]);
-    if (!row || row.status === 'erased') throw new AssistantError('TRANSCRIPTION_NOT_FOUND', 404, 'Unknown transcription.');
-    const now = this.clock();
-    await this.pool.query(`UPDATE transcriptions SET status = CASE WHEN status = 'completed' THEN status ELSE 'abandoned' END,
-      updated_at = CASE WHEN status = 'completed' THEN updated_at ELSE $2 END,
-      audio_deleted_at = COALESCE(audio_deleted_at, $2) WHERE id = $1`, [id, now]);
+    const attempt = await transaction(this.pool, async (client) => {
+      await lockTranscription(client, id);
+      const { rows: [row] } = await client.query('SELECT status, attempts FROM transcriptions WHERE id = $1 AND user_id = $2', [id, identity.userId]);
+      if (!row || row.status === 'erased') throw new AssistantError('TRANSCRIPTION_NOT_FOUND', 404, 'Unknown transcription.');
+      await client.query(`UPDATE transcriptions SET status = CASE WHEN status = 'completed' THEN status ELSE 'abandoned' END,
+        updated_at = CASE WHEN status = 'completed' THEN updated_at ELSE $2 END WHERE id = $1`, [id, this.clock()]);
+      return row.attempts as number;
+    });
     const job = this.jobs.get(id);
     job?.abort.abort();
-    await rm(this.audioPath(id), { force: true });
+    await this.deleteAudio(id, attempt);
     await job?.promise;
     return this.snapshot(identity.userId, id);
   }
@@ -237,8 +276,7 @@ export class VoiceService {
   /** Hourly and at startup: audio older than 24 h, orphans, interrupted jobs and texts never used (ADR-021, ADR-030). */
   async cleanup(): Promise<{ files: number; interrupted: number; erased: number }> {
     const now = this.clock();
-    const interrupted = await this.pool.query(`UPDATE transcriptions SET status = 'failed', error_code = 'INTERRUPTED',
-        audio_deleted_at = COALESCE(audio_deleted_at, $1), updated_at = $1
+    const interrupted = await this.pool.query(`UPDATE transcriptions SET status = 'failed', error_code = 'INTERRUPTED', updated_at = $1
       WHERE status = ANY($2) AND updated_at < $1::timestamptz - make_interval(secs => $3) AND NOT (id = ANY($4::uuid[])) RETURNING id`,
     [now, OPEN_STATUSES, this.limits.staleMs / 1000, [...this.jobs.keys()]]);
     const erased = await this.pool.query(`UPDATE transcriptions t SET status = 'erased', text = NULL, languages = '{}', completed_at = NULL, error_code = NULL
@@ -247,8 +285,6 @@ export class VoiceService {
     let files = 0;
     let names: string[] = [];
     try { names = await readdir(this.audioDir); } catch { names = []; }
-    const { rows } = await this.pool.query<{ id: string }>('SELECT id FROM transcriptions WHERE audio_deleted_at IS NULL');
-    const kept = new Set(rows.map((row) => row.id));
     for (const name of names) {
       const path = join(this.audioDir, name);
       const info = await stat(path).catch(() => null);
@@ -258,12 +294,26 @@ export class VoiceService {
       // Never touch a file this service did not write, even in a misconfigured shared directory.
       if (id === undefined && !partial) continue;
       const age = now.getTime() - info.mtimeMs;
-      if (age > this.limits.audioTtlMs || (partial && age > this.limits.staleMs) || (id !== undefined && !kept.has(id) && !this.jobs.has(id))) {
+      if (id !== undefined) {
+        const removed = await transaction(this.pool, async (client) => {
+          await lockTranscription(client, id);
+          const { rows: [row] } = await client.query('SELECT status FROM transcriptions WHERE id = $1', [id]);
+          // Recheck under the lock: a retry may have replaced the file since readdir().
+          if (this.jobs.has(id) || (row && OPEN_STATUSES.includes(row.status))) return false;
+          await rm(path, { force: true });
+          await client.query('UPDATE transcriptions SET audio_deleted_at = COALESCE(audio_deleted_at, $2) WHERE id = $1', [id, now]);
+          return true;
+        });
+        if (removed) files++;
+      } else if (age > this.limits.staleMs) {
         await rm(path, { force: true });
         files++;
-        if (id) await this.pool.query('UPDATE transcriptions SET audio_deleted_at = COALESCE(audio_deleted_at, $2) WHERE id = $1', [id, now]);
       }
     }
+    // Retry failed deletions and record the absence of files lost during an interrupted startup.
+    const { rows: pendingDeletion } = await this.pool.query<{ id: string; attempts: number }>(
+      'SELECT id, attempts FROM transcriptions WHERE NOT (status = ANY($1)) AND audio_deleted_at IS NULL', [OPEN_STATUSES]);
+    for (const row of pendingDeletion) await this.deleteAudio(row.id, row.attempts);
     const counts = { files, interrupted: interrupted.rowCount ?? 0, erased: erased.rowCount ?? 0 };
     if (counts.files + counts.interrupted + counts.erased > 0) {
       await this.pool.query("INSERT INTO maintenance_runs (kind, outcome, details, finished_at) VALUES ('audio_cleanup', 'succeeded', $1, $2)",

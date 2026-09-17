@@ -40,10 +40,11 @@ struct AssistantView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Historique", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                        .disabled(services.voice.phase != .idle)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Nouvelle conversation", systemImage: "square.and.pencil") { store.newConversation() }
-                        .disabled(store.pending != nil || store.isEmptyConversation)
+                        .disabled(store.pending != nil || store.isBusy || store.isEmptyConversation || services.voice.phase != .idle)
                 }
             }
             .sheet(isPresented: $showingHistory) {
@@ -411,7 +412,7 @@ private struct Composer: View {
                             .font(.title)
                             .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
                     }
-                    .disabled(!store.canSend)
+                    .disabled(!store.canSend || services.voice.isWorking)
                     .accessibilityLabel("Envoyer")
                 }
             }

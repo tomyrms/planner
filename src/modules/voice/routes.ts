@@ -41,6 +41,8 @@ const fieldsSchema = z.strictObject({
 });
 
 function send(request: FastifyRequest, reply: FastifyReply, status: number, code: string, message: string, extra: Record<string, unknown> = {}): FastifyReply {
+  // Technical diagnosis only: never the file, transcript, form fields or provider response.
+  request.log.info({ event: 'voice_request_rejected', code, status }, 'Voice request rejected');
   return reply.code(status).header('Cache-Control', 'no-store').send({ error: { ...extra, code, message, requestId: request.id } });
 }
 
@@ -57,7 +59,8 @@ export function registerVoiceRoutes(app: FastifyInstance, options: { service: Vo
     if (!clientVersionAccepted(request.headers['x-client-version'], options.minimumClientVersion)) {
       return send(request, reply, 426, 'CLIENT_TOO_OLD', 'Update the app to send voice messages.', { minimumVersion: options.minimumClientVersion });
     }
-    if (!options.service.enabled) return send(request, reply, 503, 'TRANSCRIPTION_UNAVAILABLE', 'Voice transcription is not configured.');
+    // Existing results and abandonment remain available even if the provider was disabled.
+    if (request.method === 'POST' && !options.service.enabled) return send(request, reply, 503, 'TRANSCRIPTION_UNAVAILABLE', 'Voice transcription is not configured.');
   };
   const who = (request: FastifyRequest) => {
     const found = identities.get(request);
@@ -84,6 +87,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: { service: Vo
     const fields: Record<string, string> = {};
     let upload: { path: string; byteSize: number; sha256: string } | null = null;
     let tooLarge = false;
+    let invalid = false;
     try {
       for await (const part of request.parts({ limits: { fileSize: MAX_AUDIO_BYTES, files: 1, fields: 4, fieldSize: 100, parts: 5 } })) {
         if (part.type === 'file') {
@@ -92,7 +96,8 @@ export function registerVoiceRoutes(app: FastifyInstance, options: { service: Vo
           if (part.file.destroyed) continue;
           if (part.fieldname !== 'audio' || upload !== null) {
             part.file.resume();
-            return send(request, reply, 400, 'INVALID_REQUEST', 'Expected one "audio" file.');
+            invalid = true;
+            continue;
           }
           // The name and MIME type sent by the client are ignored; the content is inspected later.
           const path = options.service.temporaryPath();
@@ -115,8 +120,11 @@ export function registerVoiceRoutes(app: FastifyInstance, options: { service: Vo
           if (part.file.truncated) tooLarge = true;
           upload = { path, byteSize, sha256: hash.digest('hex') };
         } else {
-          if (typeof part.value !== 'string') return send(request, reply, 400, 'INVALID_REQUEST', 'Invalid field.');
-          fields[part.fieldname] = part.value;
+          if (typeof part.value !== 'string' || part.valueTruncated || part.fieldnameTruncated || Object.hasOwn(fields, part.fieldname)) {
+            invalid = true;
+          } else {
+            fields[part.fieldname] = part.value;
+          }
         }
       }
     } catch (error) {
@@ -129,7 +137,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: { service: Vo
       throw error;
     }
     const parsed = fieldsSchema.safeParse(fields);
-    if (!upload || tooLarge || !parsed.success) {
+    if (!upload || tooLarge || invalid || !parsed.success) {
       if (upload) await rm(upload.path, { force: true });
       if (tooLarge) return send(request, reply, 413, 'AUDIO_TOO_LARGE', 'Audio larger than 10 MB.');
       return send(request, reply, 400, 'INVALID_REQUEST', 'Expected transcriptionId, durationMs and audio.');

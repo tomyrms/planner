@@ -56,6 +56,8 @@ final class AppModel {
         guard case .ready(let services) = phase else { return }
         let pending = try await services.queue.pending()
         guard pending.count == 0 else { throw UnpairError.pendingCommands(pending.count) }
+        services.voice.stop()
+        services.assistant.stopRequests()
         try? await services.api.logout()
         await services.stop()
         try await services.db.disconnectAndClear()
@@ -119,10 +121,13 @@ final class AppServices {
             complete: { [weak self] target in await self?.complete(target) }
         )
         await sync.start()
+        await voice.appDidBecomeActive()
     }
 
     func stop() async {
         NotificationRouter.shared.detach()
+        voice.stop()
+        assistant.stopRequests()
         assistant.stop()
         directory.stop()
         agenda.stop()

@@ -16,7 +16,7 @@ struct VoiceButton: View {
                 .font(.title2)
                 .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
         }
-        .disabled(voice.phase != .idle || voice.draft != nil || services.assistant.isBusy || services.assistant.pending != nil)
+        .disabled(voice.phase != .idle || voice.draft != nil || !services.assistant.canAcceptVoice)
         .accessibilityLabel("Enregistrer un message vocal")
         .sensoryFeedback(.impact(weight: .light), trigger: voice.phase == .recording)
         .alert("Micro non autorisé", isPresented: $voice.permissionDenied) {
@@ -98,16 +98,24 @@ struct VoiceDraftBar: View {
                         .font(.subheadline)
                     Spacer()
                     switch voice.phase {
+                    case .checking:
+                        ProgressView()
+                        Text("Vérification…").font(.footnote)
                     case .uploading:
                         ProgressView()
                         Text("Envoi…").font(.footnote)
                     case .transcribing:
                         ProgressView()
                         Text("Transcription…").font(.footnote)
+                    case .delivering:
+                        ProgressView()
+                        Text("Envoi du texte…").font(.footnote)
                     default:
                         if draft.state != .failed || voice.canRetry {
-                            Button(draft.state == .failed ? "Réessayer" : "Envoyer") {
-                                Task { await voice.send() }
+                            Button(draft.transcript != nil ? "Envoyer le texte" : draft.state == .pending ? "Vérifier le résultat" : draft.state == .failed ? "Réessayer" : "Envoyer") {
+                                Task {
+                                    if draft.state == .pending { await voice.verify() } else { await voice.send() }
+                                }
                             }
                             .buttonStyle(.bordered)
                         }
@@ -115,6 +123,16 @@ struct VoiceDraftBar: View {
                             voice.discard()
                         }
                     }
+                }
+                if voice.isWorking {
+                    Button("Mettre en pause") { voice.pause() }
+                        .font(.footnote)
+                }
+                if let text = draft.transcript {
+                    Text(text)
+                        .font(.callout)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
                 }
             }
         }

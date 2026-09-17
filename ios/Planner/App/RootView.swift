@@ -25,6 +25,7 @@ struct RootView: View {
             if phase == .active {
                 services.reminders.requestPass()
                 Task { await services.sync.resumeIfRecoverable() }
+                Task { await services.voice.appDidBecomeActive() }
             } else {
                 // Leaving the foreground ends a recording without sending it.
                 Task { await services.voice.appWillResignActive() }

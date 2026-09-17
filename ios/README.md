@@ -2,7 +2,9 @@
 
 App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031) et publie un **IPA non signé** à installer avec iLoader. Le Mac n'est plus qu'une solution de secours. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
 
-État : étape 5 en cours — appairage par lien, Aujourd'hui, Inbox, À venir, listes, Terminées, Corbeille, recherche, éditeur, Réglages > Synchronisation, sur PowerSync Swift 1.16.2. Calendrier et Assistant affichent un écran d'attente. Compilé par GitHub ; **pas encore essayé sur l'iPhone**.
+État au 17 septembre : appairage par lien, Aujourd'hui, Inbox, À venir, listes, Terminées, Corbeille, recherche, éditeur et synchronisation sur PowerSync Swift 1.16.2 ; calendrier, séries et rappels locaux ; assistant texte, historique et capture vocale. L'utilisateur a installé l'app et signalé un envoi vocal refusé ou bloqué. Cela ne valide pas encore l'ensemble des parcours sur appareil.
+
+Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'envoi et de transcription et permet de mettre l'attente en pause. Il récupère le résultat par GET avant tout nouvel envoi et conserve le texte jusqu'à sa remise durable à l'assistant. Les tests de reprise s'exécutent dans le workflow iOS ; la capture au microphone et les interruptions demandent encore un essai sur l'iPhone.
 
 ## Appairer l'app
 
@@ -25,7 +27,7 @@ Coller le lien `planner://pair?…` affiché dans l'écran d'appairage (valable 
 
 ## Installer avec iLoader (méthode principale, sans Mac)
 
-Pas encore essayé : signaler toute étape qui bloque.
+Méthode utilisée pour les essais de l'app ; signaler toute étape qui bloque.
 
 1. Ouvrir le dernier run vert du workflow **iOS** : https://github.com/tomyrms/planner/actions/workflows/ios.yml (connecté à GitHub).
 2. En bas, **Artifacts** : télécharger `Planner-<version>-<build>` (un zip), l'extraire : il contient `Planner-<version>-<build>.ipa`.

@@ -27,6 +27,15 @@ nonisolated struct PendingTurn: Codable, Equatable, Sendable {
     }
 }
 
+/// Preparing a turn has no remote effect. Admission persists it before acknowledging the voice draft.
+@MainActor
+protocol VoiceAssistant: AnyObject {
+    var conversationId: String { get }
+    var canAcceptVoice: Bool { get }
+    func prepareVoiceTurn(text: String, transcriptionId: String, conversationId: String) async -> PendingTurn?
+    func acceptVoice(_ turn: PendingTurn) throws -> Bool
+}
+
 /// One line of the conversation as shown, with what can be done on it.
 struct ThreadEntry: Identifiable {
     let message: ThreadMessage
@@ -40,7 +49,7 @@ struct ThreadEntry: Identifiable {
 }
 
 @Observable
-final class AssistantStore {
+final class AssistantStore: VoiceAssistant {
     enum Phase: Equatable {
         case idle
         case preparing
@@ -73,6 +82,7 @@ final class AssistantStore {
     private var turns: [String: TurnControls] = [:]
     private var snapshots: [String: TurnSnapshot] = [:]
     @ObservationIgnored private var observations: [Task<Void, Never>] = []
+    @ObservationIgnored private var voiceSubmission: Task<Void, Never>?
     /// Called when a turn changed something: reminders are reconciled at once, then again after replication.
     @ObservationIgnored var onResult: (() -> Void)?
 
@@ -101,6 +111,8 @@ final class AssistantStore {
     var canSend: Bool {
         !isBusy && pending == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    var canAcceptVoice: Bool { !isBusy && pending == nil && revising == nil }
 
     var isEmptyConversation: Bool {
         entries.isEmpty && pending == nil
@@ -135,8 +147,14 @@ final class AssistantStore {
         observations.removeAll()
     }
 
+    /// Called when the paired services are stopped, not when merely changing conversation.
+    func stopRequests() {
+        voiceSubmission?.cancel()
+        voiceSubmission = nil
+    }
+
     func open(conversation id: String) {
-        guard pending == nil else {
+        guard pending == nil, !isBusy else {
             notice = "Une demande attend encore son résultat dans la conversation actuelle."
             return
         }
@@ -155,6 +173,41 @@ final class AssistantStore {
     }
 
     // MARK: - Sending
+
+    func prepareVoiceTurn(text: String, transcriptionId: String, conversationId: String) async -> PendingTurn? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canAcceptVoice, !text.isEmpty else { return nil }
+        phase = .preparing
+        defer { if phase == .preparing { phase = .idle } }
+        let unsynced = await waitForLocalChanges()
+        guard !Task.isCancelled else { return nil }
+        return PendingTurn(
+            turnId: UUID().uuidString.lowercased(), conversationId: conversationId,
+            messageId: UUID().uuidString.lowercased(), text: String(text.prefix(4000)),
+            transcriptionId: transcriptionId, revisesMessageId: nil,
+            referenceInstant: Timestamp.format(Date()), timeZone: TimeZone.current.identifier,
+            unsyncedAggregateIds: unsynced
+        )
+    }
+
+    /// A crash between this write and clearing the vocal draft replays this exact request, including
+    /// its timestamps and preconditions. The server's turn receipt prevents a second action.
+    func acceptVoice(_ turn: PendingTurn) throws -> Bool {
+        if pending == turn || snapshots[turn.turnId] != nil { return true }
+        guard canAcceptVoice else { return false }
+        let encoded = try JSONEncoder().encode(turn)
+        if conversationId != turn.conversationId { open(conversation: turn.conversationId) }
+        defaults.set(encoded, forKey: Keys.pending)
+        pending = turn
+        phase = .waiting
+        rebuild()
+        voiceSubmission = Task { [weak self] in
+            guard let self else { return }
+            await self.submit(turn)
+            if !Task.isCancelled { self.voiceSubmission = nil }
+        }
+        return true
+    }
 
     func send(text override: String? = nil, transcriptionId: String? = nil) async {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -230,11 +283,14 @@ final class AssistantStore {
         phase = .waiting
         do {
             let snapshot = try await api.submitTurn(turn.request)
+            guard !Task.isCancelled else { return }
             accept(snapshot)
             AccessibilityNotification.Announcement(Self.announcement(for: snapshot)).post()
         } catch let error as APIError {
+            guard !Task.isCancelled else { return }
             handle(error, for: turn)
         } catch {
+            guard !Task.isCancelled else { return }
             phase = .unknown
         }
     }
@@ -280,7 +336,7 @@ final class AssistantStore {
     private func waitForLocalChanges() async -> [String] {
         let deadline = Date().addingTimeInterval(5)
         var pendingIds = (try? await repository.pendingAggregateIds()) ?? []
-        while !pendingIds.isEmpty && Date() < deadline {
+        while !pendingIds.isEmpty && Date() < deadline && !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             pendingIds = (try? await repository.pendingAggregateIds()) ?? []
         }

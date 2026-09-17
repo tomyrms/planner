@@ -13,7 +13,7 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/time tests/ops tests/app.test.ts",
-    "test:integration": "vitest run tests/db tests/auth tests/sync tests/assistant",
+    "test:integration": "vitest run tests/db tests/auth tests/sync tests/assistant tests/voice tests/maintenance",
     "db:migrate": "tsx src/cli/migrate.ts",
     "db:provision-sync": "tsx src/cli/provision-sync.ts",
     "backup": "tsx src/cli/backup.ts",

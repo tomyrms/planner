@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -45,8 +45,8 @@ describe('voice transcription service', () => {
   const freshUser = async (): Promise<Identity> =>
     ({ userId: (await db.pool.query<{ id: string }>('INSERT INTO users DEFAULT VALUES RETURNING id')).rows[0]!.id, deviceId: null });
 
-  async function voiceFor(provider: TranscriptionProvider | null, options: { limits?: Partial<VoiceLimits>; clock?: () => Date } = {}) {
-    const dir = await mkdtemp(join(tmpdir(), 'planner-voice-test-'));
+  async function voiceFor(provider: TranscriptionProvider | null, options: { limits?: Partial<VoiceLimits>; clock?: () => Date; directory?: string } = {}) {
+    const dir = options.directory ?? await mkdtemp(join(tmpdir(), 'planner-voice-test-'));
     const service = new VoiceService(db.pool, provider, dir, { clock: options.clock ?? (() => new Date()), ...(options.limits ? { limits: options.limits } : {}) });
     await service.prepareDirectory();
     created.push({ service, dir });
@@ -110,6 +110,7 @@ describe('voice transcription service', () => {
     expect(provider.requests).toHaveLength(1);
     expect(await files()).toEqual([]);
     expect(await failure(send(service, me, { id: first.id, bytes: variant }))).toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', statusCode: 409 });
+    expect(await failure(send(service, me, { id: first.id, durationMs: 3500 }))).toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', statusCode: 409 });
     expect(await failure(send(service, other, { id: first.id }))).toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', statusCode: 409 });
     expect(await files()).toEqual([]);
     // Another user can neither read nor abandon it.
@@ -212,6 +213,99 @@ describe('voice transcription service', () => {
     expect(await done.service.abandon(me, finished.id)).toMatchObject({ status: 'completed', text: 'Déjà transcrit.' });
   });
 
+  it('joins concurrent uploads of the same recording, including on a second service instance', async () => {
+    const me = await freshUser();
+    const provider = new ScriptedTranscriptionProvider([hang]);
+    const { service, dir, files } = await voiceFor(provider, { limits: { inlineWaitMs: 10 } });
+    const otherProvider = new ScriptedTranscriptionProvider([said('Ne doit pas être appelé.')]);
+    const peer = await voiceFor(otherProvider, { directory: dir, limits: { inlineWaitMs: 10 } });
+    const id = randomUUID();
+    const copies = await Promise.all(Array.from({ length: 6 }, () => send(service, me, { id })));
+    expect(copies.every((copy) => ['received', 'transcribing'].includes(copy.snapshot.status))).toBe(true);
+    expect((await send(peer.service, me, { id })).snapshot.status).toBe('transcribing');
+    expect(provider.requests).toHaveLength(1);
+    expect(otherProvider.requests).toHaveLength(0);
+    expect(await row(id)).toMatchObject({ attempts: 1, status: 'transcribing' });
+    expect(await files()).toEqual([`${id}.m4a`]);
+    await service.abandon(me, id);
+  });
+
+  it('reserves hourly and monthly allowances atomically for simultaneous recordings', async () => {
+    for (const limits of [{ perHour: 1 }, { monthlyMinutes: 0.05 }]) {
+      const me = await freshUser();
+      const provider = new ScriptedTranscriptionProvider([hang]);
+      const { service } = await voiceFor(provider, { limits: { ...limits, inlineWaitMs: 10 } });
+      const results = await Promise.allSettled(Array.from({ length: 5 }, () => send(service, me)));
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const failures = results.filter((result) => result.status === 'rejected');
+      expect(failures).toHaveLength(4);
+      for (const result of failures) {
+        expect(result.reason).toMatchObject({ code: 'perHour' in limits ? 'RATE_LIMITED' : 'TRANSCRIPTION_BUDGET_EXCEEDED', statusCode: 429 });
+      }
+      expect(provider.requests).toHaveLength(1);
+    }
+  });
+
+  it('preserves a completed transcript when deleting the audio fails and retries cleanup later', async () => {
+    const me = await freshUser();
+    const provider = new ScriptedTranscriptionProvider([async (request) => {
+      // A filesystem failure after the provider has read the file must not strand the status in transcribing.
+      await rm(request.audioPath);
+      await mkdir(request.audioPath);
+      return said('Résultat déjà reçu.');
+    }]);
+    const { service, dir, files } = await voiceFor(provider);
+    const result = await send(service, me);
+    expect(result.snapshot).toMatchObject({ status: 'completed', text: 'Résultat déjà reçu.', audioDeleted: false });
+    expect(await row(result.id)).toMatchObject({ status: 'completed', attempts: 1, audio_deleted_at: null });
+    // Restore a normal file once the filesystem is available again; hourly cleanup removes it.
+    await rm(join(dir, `${result.id}.m4a`), { recursive: true });
+    await writeFile(join(dir, `${result.id}.m4a`), mono);
+    await service.cleanup();
+    expect(await files()).toEqual([]);
+    expect(await service.snapshot(me.userId, result.id)).toMatchObject({ status: 'completed', text: 'Résultat déjà reçu.', audioDeleted: true });
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it('keeps the audio if persisting a result fails, so an interrupted attempt can be retried', async () => {
+    const me = await freshUser();
+    const id = randomUUID();
+    const provider = new ScriptedTranscriptionProvider([said('À conserver.')]);
+    const { service, files } = await voiceFor(provider);
+    // A constraint in this disposable schema simulates the result write failing, without disrupting other DB calls.
+    await db.pool.query(`ALTER TABLE transcriptions ADD CONSTRAINT test_result_unavailable CHECK (id <> '${id}'::uuid OR status <> 'completed')`);
+    try {
+      expect((await send(service, me, { id })).snapshot).toMatchObject({ status: 'transcribing', text: null, audioDeleted: false });
+      expect(await files()).toEqual([`${id}.m4a`]);
+    } finally {
+      await db.pool.query('ALTER TABLE transcriptions DROP CONSTRAINT test_result_unavailable');
+    }
+    await db.pool.query("UPDATE transcriptions SET updated_at = now() - interval '11 minutes' WHERE id = $1", [id]);
+    expect((await send(service, me, { id })).snapshot).toMatchObject({ status: 'completed', text: 'À conserver.', audioDeleted: true });
+    expect(await files()).toEqual([]);
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it('does not let a delayed result overwrite a later attempt', async () => {
+    const me = await freshUser();
+    let now = new Date();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider = new ScriptedTranscriptionProvider([async () => { await gate; return said('Ancien résultat.'); }]);
+    const { service, dir } = await voiceFor(provider, { clock: () => now, limits: { inlineWaitMs: 10 } });
+    const peer = await voiceFor(new ScriptedTranscriptionProvider([said('Résultat repris.')]), { directory: dir, clock: () => now });
+    try {
+      const pending = await send(service, me);
+      now = new Date(now.getTime() + 11 * 60_000);
+      expect((await send(peer.service, me, { id: pending.id })).snapshot).toMatchObject({ status: 'completed', text: 'Résultat repris.' });
+      release();
+      await service.shutdown();
+      expect(await row(pending.id)).toMatchObject({ status: 'completed', text: 'Résultat repris.', attempts: 2 });
+    } finally {
+      release();
+    }
+  });
+
   it('limits voice messages per hour and bills every attempt against the monthly minutes', async () => {
     let now = new Date('2026-09-30T20:00:00Z');
     const clock = () => now;
@@ -249,12 +343,12 @@ describe('voice transcription service', () => {
     const orphan = randomUUID();
     const stale = randomUUID();
     const fresh = randomUUID();
-    for (const [id, updated] of [[orphan, now], [stale, new Date(now.getTime() - 11 * 60_000)], [fresh, now]] as const) {
+    for (const [id, updated] of [[orphan, new Date(now.getTime() - 11 * 60_000)], [stale, new Date(now.getTime() - 11 * 60_000)], [fresh, now]] as const) {
       await db.pool.query(`INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, provider, model, created_at, updated_at)
         VALUES ($1, $2, 'transcribing', 3000, $3, $4, 1, 'scripted', 'scripted-v1', $5, $5)`, [id, me.userId, mono.length, sha(mono), updated]);
     }
     const { service } = await voiceFor(new ScriptedTranscriptionProvider([said('Repris après redémarrage.')]), { clock: () => now });
-    // The client uploads the same file again after the restart: the job starts over.
+    // Once the interruption deadline passes, uploading the same file retries the job.
     expect((await send(service, me, { id: orphan })).snapshot).toMatchObject({ status: 'completed', text: 'Repris après redémarrage.' });
     expect(await row(orphan)).toMatchObject({ attempts: 2 });
     const counts = await service.cleanup();
@@ -262,6 +356,36 @@ describe('voice transcription service', () => {
     expect(await row(stale)).toMatchObject({ status: 'failed', error_code: 'INTERRUPTED' });
     expect((await row(stale))!.audio_deleted_at).not.toBeNull();
     expect(await row(fresh)).toMatchObject({ status: 'transcribing' });
+  });
+
+  it('applies the attempt limit to interrupted jobs as well as recorded failures', async () => {
+    const me = await freshUser();
+    const id = randomUUID();
+    await db.pool.query(`INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, created_at, updated_at)
+      VALUES ($1, $2, 'transcribing', 3000, $3, $4, 3, now() - interval '11 minutes', now() - interval '11 minutes')`, [id, me.userId, mono.length, sha(mono)]);
+    const provider = new ScriptedTranscriptionProvider([said('Jamais appelé.')]);
+    const { service, files } = await voiceFor(provider);
+    expect(await failure(send(service, me, { id }))).toMatchObject({ code: 'TRANSCRIPTION_FAILED', statusCode: 422 });
+    expect(provider.requests).toHaveLength(0);
+    expect(await files()).toEqual([]);
+  });
+
+  it('lets polling discover an interrupted job without waiting for hourly cleanup', async () => {
+    const me = await freshUser();
+    const id = randomUUID();
+    let now = new Date();
+    await db.pool.query(`INSERT INTO transcriptions (id, user_id, status, duration_ms, byte_size, audio_sha256, attempts, created_at, updated_at)
+      VALUES ($1, $2, 'transcribing', 3000, $3, $4, 1, $5, $5)`, [id, me.userId, mono.length, sha(mono), now]);
+    const provider = new ScriptedTranscriptionProvider([said('Repris.')]);
+    const { service, dir, files } = await voiceFor(provider, { clock: () => now });
+    await writeFile(join(dir, `${id}.m4a`), mono);
+    expect(await service.snapshot(me.userId, id)).toMatchObject({ status: 'transcribing', audioDeleted: false });
+    now = new Date(now.getTime() + 11 * 60_000);
+    expect(await service.snapshot(me.userId, id)).toMatchObject({ status: 'failed', errorCode: 'INTERRUPTED', audioDeleted: true });
+    expect(await files()).toEqual([]);
+    expect(provider.requests).toHaveLength(0);
+    expect((await send(service, me, { id })).snapshot).toMatchObject({ status: 'completed', text: 'Repris.' });
+    expect(await row(id)).toMatchObject({ attempts: 2 });
   });
 
   it('cleans old and orphaned audio, erases texts never used, and leaves foreign files alone', async () => {
