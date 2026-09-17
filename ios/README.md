@@ -6,6 +6,10 @@ App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ;
 
 Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'envoi et de transcription et permet de mettre l'attente en pause. Il récupère le résultat par GET avant tout nouvel envoi et conserve le texte jusqu'à sa remise durable à l'assistant. Les tests de reprise s'exécutent dans le workflow iOS ; la capture au microphone et les interruptions demandent encore un essai sur l'iPhone.
 
+## Exporter les données locales
+
+Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. L'import et la récupération guidée après restauration restent à livrer.
+
 ## Appairer l'app
 
 L'app ne contient aucune adresse de serveur (l'IPA est public). Le backend doit être joignable **en HTTPS** depuis l'iPhone, avec `PUBLIC_API_URL` et `PUBLIC_SYNC_URL` réglés sur ses adresses publiques. Puis, sur le serveur :

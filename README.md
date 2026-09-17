@@ -30,6 +30,8 @@ L'app iPhone contient maintenant les écrans de tâches, l'agenda et le calendri
 
 Restent notamment l'import d'un export, la récupération guidée de la file et les validations sur l'iPhone. Les 24 cas DeepSeek ont été réussis au moins une fois lors des évaluations du 16 septembre ; cela ne constitue pas une garantie sur toutes les demandes réelles.
 
+Depuis Réglages > Données, l'iPhone peut exporter sa copie locale en JSON, même hors ligne : tâches, listes, occurrences, rappels, conversations, textes en cours, commandes non acquittées et rejets. L'archive précise si la première synchronisation est incomplète ; elle ne remplace pas une sauvegarde complète du serveur. Aucun audio ni identifiant d'accès n'est inclus, et l'export ne modifie pas la file.
+
 ## Démarrer (Windows)
 
 Prérequis : Docker Desktop lancé. Node 24.21.0 est fourni localement dans `.tools/` et utilisé par `scripts/npm-local.ps1` (qui réinsère le `--` que PowerShell supprime).
@@ -107,7 +109,7 @@ L'archive est refusée si un fichier ressemble à une clé ou à un dump, ou con
 
 - `test:unit` : module temporel, règles de sauvegarde et frontière HTTP, sans base.
 - `test:integration` : PostgreSQL dans un schéma jetable par suite (contraintes, migrations, rôles, restaurabilité, couverture de la sauvegarde, provisionnement, commandes et concurrence, route de sync, export, fixtures de conflits, assistant et jeu d'évaluation scripté, voix). Nécessite `DATABASE_ADMIN_URL`.
-- `tests/fixtures/audio` : deux vrais fichiers AAC de 3 s (mono, stéréo) générés par ffmpeg, sans voix.
+- `tests/fixtures/audio` : fichiers AAC de 3 s générés par FFmpeg (mono, stéréo) et AVFoundation (Apple mono), sans voix.
 - `smoke:local` et `spike:powersync` demandent la pile Docker démarrée.
 - Aucun test Swift/iPhone n'est exécuté depuis Windows.
 

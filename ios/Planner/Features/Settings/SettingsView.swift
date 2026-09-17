@@ -17,6 +17,7 @@ struct SettingsView: View {
             Form {
                 syncSection
                 if !rejections.isEmpty { rejectionsSection }
+                LocalExportSection()
                 deviceSection
                 aboutSection
             }
