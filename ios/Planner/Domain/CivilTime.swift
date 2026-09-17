@@ -22,8 +22,7 @@ nonisolated struct CivilDate: Hashable, Comparable, Sendable, CustomStringConver
     }
 
     init(_ date: Date, in timeZone: TimeZone = .current) {
-        let components = Calendar.planner(in: timeZone).dateComponents([.year, .month, .day], from: date)
-        self.init(year: components.year ?? 1970, month: components.month ?? 1, day: components.day ?? 1)
+        self = TimeResolver.localDate(at: date, in: timeZone)
     }
 
     static func today(in timeZone: TimeZone = .current) -> CivilDate {
@@ -40,13 +39,11 @@ nonisolated struct CivilDate: Hashable, Comparable, Sendable, CustomStringConver
     }
 
     func adding(days: Int) -> CivilDate {
-        let calendar = Calendar.planner(in: .gmt)
-        let moved = calendar.date(byAdding: .day, value: days, to: noon(in: .gmt)) ?? noon(in: .gmt)
-        return CivilDate(moved, in: .gmt)
+        CivilDate(dayNumber: dayNumber + days)
     }
 
     func days(until other: CivilDate) -> Int {
-        Calendar.planner(in: .gmt).dateComponents([.day], from: noon(in: .gmt), to: other.noon(in: .gmt)).day ?? 0
+        other.dayNumber - dayNumber
     }
 
     static func < (lhs: CivilDate, rhs: CivilDate) -> Bool {
@@ -78,8 +75,7 @@ nonisolated struct LocalTime: Hashable, Comparable, Sendable, CustomStringConver
     }
 
     init(_ date: Date, in timeZone: TimeZone = .current) {
-        let components = Calendar.planner(in: timeZone).dateComponents([.hour, .minute], from: date)
-        self.init(hour: components.hour ?? 0, minute: components.minute ?? 0)
+        self = TimeResolver.project(date, into: timeZone).time
     }
 
     /// "17:00", the form the commands use.
@@ -113,15 +109,15 @@ nonisolated struct TimeValue: Hashable, Sendable {
 
     /// The instant of a timed value; a date alone has none.
     var instant: Date? {
-        guard let time, let timeZone, let zone = TimeZone(identifier: timeZone) else { return nil }
-        return Calendar.planner(in: zone).date(from: DateComponents(
-            year: date.year, month: date.month, day: date.day, hour: time.hour, minute: time.minute))
+        guard let time, let timeZone else { return nil }
+        return TimeResolver.resolve(date: date, time: time, zone: timeZone)?.instant
     }
 
     /// Date and time as seen on this device: a timed value is converted from its own zone.
     func local(in zone: TimeZone = .current) -> (date: CivilDate, time: LocalTime?) {
         guard let instant else { return (date, nil) }
-        return (CivilDate(instant, in: zone), LocalTime(instant, in: zone))
+        let projected = TimeResolver.project(instant, into: zone)
+        return (projected.date, projected.time)
     }
 
     /// The zone differs from the device's: worth showing next to the time.

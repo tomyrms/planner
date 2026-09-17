@@ -50,6 +50,22 @@ jobs:
           tail -n 3 build/xcodebuild.log
           exit "$status"
 
+      - name: Tests on the iOS 26.2 simulator (shared time fixtures)
+        working-directory: ios
+        run: |
+          status=0
+          xcodebuild test \
+            -project Planner.xcodeproj -scheme Planner -configuration Debug \
+            -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 17' -derivedDataPath build/DerivedDataTests \
+            -skipPackagePluginValidation -skipMacroValidation \
+            > build/xcodebuild-test.log 2>&1 || status=$?
+          grep -E '(error|warning): |✘|failed|passed after' build/xcodebuild-test.log | sort -u | head -80 || true
+          tail -n 5 build/xcodebuild-test.log
+          if [ "$status" -ne 0 ]; then
+            xcrun simctl list devices available | head -40
+          fi
+          exit "$status"
+
       # Unsigned Release IPA for sideloading: iloader (or another sideloader) signs it with the free Apple ID
       # and changes the bundle identifier to <id>.<TEAMID>. The build number is the run number.
       - name: Unsigned Release IPA
