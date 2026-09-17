@@ -14,6 +14,7 @@ struct QuickCaptureAccessory: View {
     var panelWidth: CGFloat = 300
     let onAddTask: () -> Void
     let onOpenAssistant: () -> Void
+    var onCaptureStart: () -> Void = {}
 
     private var voice: VoiceMessageStore { services.voice }
     private var capturing: Bool { gesture.stage == .holding || gesture.stage == .locked }
@@ -134,6 +135,7 @@ struct QuickCaptureAccessory: View {
 
     private func begin(locked: Bool) {
         guard gesture.begin() == .start else { return }
+        onCaptureStart()
         let id = UUID()
         captureId = id
         feedbackTask?.cancel()

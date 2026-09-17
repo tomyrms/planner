@@ -20,7 +20,9 @@ struct SettingsView: View {
                 if !rejections.isEmpty { rejectionsSection }
                 LocalExportSection()
                 Section {
-                    NavigationLink("Diagnostics", systemImage: "stethoscope") { DiagnosticsView() }
+                    NavigationLink { DiagnosticsView() } label: {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
                 }
                 deviceSection
                 aboutSection

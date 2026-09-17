@@ -119,7 +119,8 @@ struct SyncRecoveryBoundaryTests {
     @Test(.timeLimit(.minutes(1))) func retiringDuringARefreshPreservesTheReplacementKeychainSession() async throws {
         try await withFixture(adoptAccess: false) { fixture in
             try fixture.replyRefresh(held: true)
-            let inFlight = Task { try await fixture.api.syncToken() }
+            let connector = fixture.connector()
+            let inFlight = Task { try await connector.fetchCredentials() }
             defer { inFlight.cancel() }
             var requests = fixture.http.started.makeAsyncIterator()
             let first = await requests.next()
@@ -142,6 +143,16 @@ struct SyncRecoveryBoundaryTests {
             }
             let saved = try fixture.credentials.load()
             #expect(saved == replacement)
+            let savedBlock = try await LocalMeta.recoveryBlock(in: fixture.db)
+            #expect(savedBlock == nil)
+
+            // SESSION_REPLACED is a cancellation of the old connector, not a new durable pairing failure.
+            do {
+                _ = try await connector.fetchCredentials()
+                Issue.record("The old connector must stop after its API session is retired.")
+            } catch is CancellationError { }
+            let afterOldConnector = try await LocalMeta.recoveryBlock(in: fixture.db)
+            #expect(afterOldConnector == nil)
 
             // adopt() cannot resurrect a retired actor, even with a still-valid access token.
             await fixture.api.adopt(fixture.tokens())
@@ -155,6 +166,158 @@ struct SyncRecoveryBoundaryTests {
         }
     }
 
+    @Test func assistantPostWaitsForIdentityAndStopsOnChangedGeneration() async throws {
+        try await withFixture { fixture in
+            let changed = UUID().uuidString.lowercased()
+            try fixture.replySync(generation: changed)
+            let connector = fixture.connector()
+            await connector.installOnlineActionGuard()
+            do {
+                try await fixture.postAssistant()
+                Issue.record("The assistant POST must not reach the server after restoration.")
+            } catch let error as SyncBlockedError {
+                #expect(error.block == .generationChanged(changed))
+            }
+            #expect(fixture.http.paths == ["/api/v1/auth/sync-token"])
+            let saved = try await LocalMeta.recoveryBlock(in: fixture.db)
+            #expect(saved == .generationChanged(changed))
+        }
+    }
+
+    @Test func savedPairingBlockStopsAssistantPostEvenAfterRetry() async throws {
+        try await withFixture { fixture in
+            try await LocalMeta.setRecoveryBlock(.pairingRequired, in: fixture.db)
+            let connector = fixture.connector()
+            await connector.installOnlineActionGuard()
+            await connector.clearBlock()
+            do {
+                try await fixture.postAssistant()
+                Issue.record("Retry must not bypass the durable pairing block for an assistant action.")
+            } catch let error as SyncBlockedError {
+                #expect(error.block == .pairingRequired)
+            }
+            #expect(fixture.http.paths.isEmpty)
+        }
+    }
+
+    @Test func anUninstalledIdentityGuardRefusesAssistantActionsWithoutNetwork() async throws {
+        try await withFixture { fixture in
+            do {
+                try await fixture.postAssistant()
+                Issue.record("An API requiring validation must fail closed until its guard is installed.")
+            } catch let error as APIError {
+                #expect(error == .transport(.notConnectedToInternet))
+            }
+            #expect(fixture.http.paths.isEmpty)
+        }
+    }
+
+    @Test func matchingIdentityPermitsTheAssistantPostOnlyAfterThePreflight() async throws {
+        try await withFixture { fixture in
+            try fixture.replySync()
+            try fixture.http.reply(to: "/api/v1/assistant/turns", status: 201, body: [:])
+            let connector = fixture.connector()
+            await connector.installOnlineActionGuard()
+            try await fixture.postAssistant()
+            #expect(fixture.http.paths == ["/api/v1/auth/sync-token", "/api/v1/assistant/turns"])
+        }
+    }
+
+    @Test(arguments: ["type", "payload_version"])
+    func malformedOutboxIsNeverAcknowledged(_ missing: String) async throws {
+        try await withFixture(seedQueue: false) { fixture in
+            try fixture.replySync()
+            let type: String? = missing == "type" ? nil : "task.create"
+            let version: Int? = missing == "payload_version" ? nil : 1
+            try await fixture.db.execute(sql: """
+                INSERT INTO outbox (id, type, payload_version, aggregate_type, aggregate_id, client_recorded_at, payload)
+                VALUES (?, ?, ?, 'task', ?, '2026-09-17T12:00:00Z', '{}')
+                """, parameters: [UUID().uuidString, type, version, UUID().uuidString])
+            let before = try await fixture.queueRows()
+            #expect(before.count == 1)
+            do {
+                try await fixture.connector().uploadData(database: fixture.db)
+                Issue.record("An incomplete local command must be kept for recovery.")
+            } catch let error as SyncBlockedError {
+                #expect(error.block == .actionRequired(status: 0, code: "LOCAL_COMMAND_INVALID"))
+            }
+            let after = try await fixture.queueRows()
+            #expect(after == before)
+            #expect(fixture.http.paths == ["/api/v1/auth/sync-token"])
+        }
+    }
+
+    @Test(arguments: ["empty", "partial", "wrong-id", "unknown-outcome", "duplicate-without-original", "generation-changed"])
+    func anInvalidReceiptKeepsEveryQueuedCommand(_ mode: String) async throws {
+        try await withFixture(seedQueue: false) { fixture in
+            try fixture.replySync()
+            let commands = [
+                LocalCommand(type: "task.create", aggregateId: UUID().uuidString, chaining: .never, payload: ["title": "First"]),
+                LocalCommand(type: "task.create", aggregateId: UUID().uuidString, chaining: .never, payload: ["title": "Second"]),
+            ]
+            try await fixture.db.writeTransaction { tx in
+                for command in commands { try Outbox.insert(command, in: tx) }
+            }
+            var results: [JSONPayload] = commands.map { ["clientCommandId": .string($0.id), "outcome": "applied"] }
+            switch mode {
+            case "empty": results = []
+            case "partial": results = [results[0]]
+            case "wrong-id": results[0] = ["clientCommandId": .string(UUID().uuidString), "outcome": "applied"]
+            case "unknown-outcome": results[0] = ["clientCommandId": .string(commands[0].id), "outcome": "future-outcome"]
+            case "duplicate-without-original": results[0] = ["clientCommandId": .string(commands[0].id), "outcome": "duplicate"]
+            default: break
+            }
+            let generation = mode == "generation-changed" ? UUID().uuidString.lowercased() : fixture.generation
+            try fixture.http.reply(to: "/api/v1/sync/mutations", payload: [
+                "serverGeneration": .string(generation), "results": .array(results),
+            ])
+            let before = try await fixture.queueRows()
+            #expect(before.count == 2)
+            do {
+                try await fixture.connector().uploadData(database: fixture.db)
+                Issue.record("An incomplete or invalid receipt must not acknowledge the queue.")
+            } catch let error as SyncBlockedError {
+                #expect(mode == "generation-changed")
+                #expect(error.block == .generationChanged(generation))
+            } catch let error as APIError {
+                #expect(mode != "generation-changed")
+                #expect(error == .invalidResponse)
+            }
+            let after = try await fixture.queueRows()
+            #expect(after == before)
+            #expect(fixture.http.paths == ["/api/v1/auth/sync-token", "/api/v1/sync/mutations"])
+        }
+    }
+
+    @Test func aDuplicateRejectedReceiptSavesTheWholeCommandBeforeAcknowledgement() async throws {
+        try await withFixture(seedQueue: false) { fixture in
+            try fixture.replySync()
+            let command = LocalCommand(type: "task.patch", aggregateId: UUID().uuidString, chaining: .never,
+                                       payload: ["set": ["title": "Keep this intent", "notes": .null]])
+            try await fixture.db.writeTransaction { tx in try Outbox.insert(command, in: tx) }
+            try fixture.http.reply(to: "/api/v1/sync/mutations", payload: [
+                "serverGeneration": .string(fixture.generation),
+                "results": [["clientCommandId": .string(command.id), "outcome": "duplicate",
+                             "original": ["outcome": "rejected", "code": "REVISION_MISMATCH", "message": "Conflict"]]],
+            ])
+            try await fixture.connector().uploadData(database: fixture.db)
+            let stored = try await fixture.db.getOptional(
+                sql: "SELECT command_json FROM sync_rejections WHERE id = ?", parameters: [command.id]
+            ) { try $0.getString(index: 0) }
+            let text = try #require(stored)
+            let decoded = try JSONPayload.decode(text)
+            let expected: JSONPayload = [
+                "clientCommandId": .string(command.id), "type": "task.patch", "payloadVersion": 1,
+                "aggregate": ["type": "task", "id": .string(command.aggregateId)],
+                "clientRecordedAt": .string(Timestamp.format(command.recordedAt)),
+                "payload": ["set": ["title": "Keep this intent", "notes": .null]],
+            ]
+            #expect(decoded == expected)
+            let after = try await fixture.queueRows()
+            #expect(after.isEmpty)
+        }
+    }
+
     private func expectBlocked(_ connector: SyncConnector, by expected: SyncBlock) async throws {
         do {
             _ = try await connector.fetchCredentials()
@@ -164,11 +327,11 @@ struct SyncRecoveryBoundaryTests {
         }
     }
 
-    private func withFixture(legacy: Bool = false, adoptAccess: Bool = true,
+    private func withFixture(legacy: Bool = false, adoptAccess: Bool = true, seedQueue: Bool = true,
                              _ work: @MainActor (RecoveryBoundaryFixture) async throws -> Void) async throws {
         let fixture = RecoveryBoundaryFixture(legacy: legacy)
         do {
-            try await fixture.prepare(adoptAccess: adoptAccess)
+            try await fixture.prepare(adoptAccess: adoptAccess, seedQueue: seedQueue)
             try await work(fixture)
             try await fixture.close()
         } catch {
@@ -198,19 +361,21 @@ private final class RecoveryBoundaryFixture {
         original = StoredSession(apiBaseURL: http.baseURL, deviceId: deviceId,
                                  refreshToken: "original-test-token", userId: legacy ? nil : userId)
         api = APIClient(session: original, clientVersion: "0.1.0", credentials: credentials,
-                        urlSession: URLSession(configuration: configuration))
+                        urlSession: URLSession(configuration: configuration), requireIdentityValidation: true)
         RecoveryURLProtocol.registry.install(http)
     }
 
-    func prepare(adoptAccess: Bool) async throws {
+    func prepare(adoptAccess: Bool, seedQueue: Bool) async throws {
         try credentials.save(original)
         try await LocalMeta.setServerGeneration(generation, in: db)
         if let owner = original.userId { try await LocalMeta.setOwnerUserId(owner, in: db) }
-        let command = LocalCommand(type: "task.create", aggregateId: UUID().uuidString, chaining: .never,
-                                   payload: ["title": "Offline task"])
-        try await db.writeTransaction { tx in
-            try tx.execute(sql: "INSERT INTO tasks (id, title) VALUES (?, 'Offline task')", parameters: [command.aggregateId])
-            try Outbox.insert(command, in: tx)
+        if seedQueue {
+            let command = LocalCommand(type: "task.create", aggregateId: UUID().uuidString, chaining: .never,
+                                       payload: ["title": "Offline task"])
+            try await db.writeTransaction { tx in
+                try tx.execute(sql: "INSERT INTO tasks (id, title) VALUES (?, 'Offline task')", parameters: [command.aggregateId])
+                try Outbox.insert(command, in: tx)
+            }
         }
         if adoptAccess { await api.adopt(tokens()) }
     }
@@ -247,6 +412,10 @@ private final class RecoveryBoundaryFixture {
         try await db.getAll(sql: "SELECT data FROM ps_crud ORDER BY id", parameters: []) {
             try $0.getString(index: 0)
         }
+    }
+
+    func postAssistant() async throws {
+        try await api.callWithoutBody("POST", "api/v1/assistant/turns", expecting: 201)
     }
 
     func close() async throws {
@@ -333,8 +502,13 @@ private final class RecoveryHTTPScenario: @unchecked Sendable {
         continuation = stream.continuation
     }
 
-    func reply(to path: String, held: Bool = false, body: [String: String]) throws {
-        let reply = Reply(body: try JSONEncoder().encode(body), status: 200, held: held)
+    func reply(to path: String, status: Int = 200, held: Bool = false, body: [String: String]) throws {
+        let reply = Reply(body: try JSONEncoder().encode(body), status: status, held: held)
+        lock.withLock { replies[path] = reply }
+    }
+
+    func reply(to path: String, payload: JSONPayload) throws {
+        let reply = Reply(body: Data(try payload.encodedText().utf8), status: 200, held: false)
         lock.withLock { replies[path] = reply }
     }
 

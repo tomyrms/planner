@@ -11,6 +11,7 @@ struct MainTabView: View {
     @State private var navigationTask: Task<Void, Never>?
     @State private var keyboardVisible = false
     @State private var barWidth: CGFloat = 320
+    @State private var suppressCaptureNavigation = false
 
     private nonisolated enum Destination: Hashable { case today, calendar, assistant, lists }
 
@@ -67,7 +68,8 @@ struct MainTabView: View {
             destination(.calendar, title: "Calendrier", symbol: "calendar")
             QuickCaptureAccessory(panelWidth: max(240, barWidth - 16),
                                   onAddTask: { addingTask = true },
-                                  onOpenAssistant: { selection = .assistant })
+                                  onOpenAssistant: { if !suppressCaptureNavigation { selection = .assistant } },
+                                  onCaptureStart: { suppressCaptureNavigation = false })
                 .frame(width: 64)
                 .offset(y: -10)
                 .zIndex(1)
@@ -116,6 +118,7 @@ struct MainTabView: View {
         guard destination != selection else { return }
         navigationTask?.cancel()
         if services.voice.phase == .recording || services.voice.phase == .finishing || services.voice.isPreparingRecording {
+            suppressCaptureNavigation = true
             navigationTask = Task {
                 await services.voice.appWillResignActive()
                 guard !Task.isCancelled else { return }

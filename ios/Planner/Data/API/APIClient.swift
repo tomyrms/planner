@@ -232,6 +232,8 @@ actor APIClient {
         request.setValue(clientVersion, forHTTPHeaderField: "X-Client-Version")
         request.httpBody = try JSONEncoder().encode(RefreshBody(refreshToken: current.refreshToken))
         let (data, response) = try await Self.send(request, with: urlSession)
+        try Task.checkCancellation()
+        guard !retired, session == current else { throw APIError.unauthorized(code: "SESSION_REPLACED") }
         guard response.statusCode == 200 else {
             if response.statusCode == 401 { accessToken = nil }
             throw Self.failure(data, response)

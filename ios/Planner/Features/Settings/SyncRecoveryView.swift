@@ -12,7 +12,9 @@ struct SyncRecoverySection: View {
                 Button("Récupérer la synchronisation", systemImage: "arrow.triangle.2.circlepath") { app.prepareRecovery() }
                     .disabled(app.recovery.isBusy)
             }
-            NavigationLink("Archives de récupération", systemImage: "archivebox") { SyncRecoveryArchivesView() }
+            NavigationLink { SyncRecoveryArchivesView() } label: {
+                Label("Archives de récupération", systemImage: "archivebox")
+            }
         } header: {
             Text("Récupération")
         } footer: {
