@@ -326,6 +326,7 @@ final class AppServices {
     let navigator = Navigator()
     var isRecoverySuspended: Bool
     @ObservationIgnored private var recoveryQuiesced: Bool
+    @ObservationIgnored private var serviceLifecycleId: UUID?
 
     init(db: any PowerSyncDatabaseProtocol, api: APIClient, session: StoredSession,
          defaults: UserDefaults = .standard, audioDirectory: URL? = nil, suspended: Bool = false) {
@@ -349,9 +350,12 @@ final class AppServices {
 
     func start() async {
         guard !isRecoverySuspended else { return }
+        let lifecycle = UUID()
+        serviceLifecycleId = lifecycle
         directory.start(tasks)
         agenda.start(tasks)
-        reminders.start()
+        await reminders.start()
+        guard serviceLifecycleId == lifecycle, !isRecoverySuspended, !Task.isCancelled else { return }
         let reminders = self.reminders
         assistant.onResult = { reminders.requestPass() }
         let navigator = self.navigator
@@ -373,18 +377,20 @@ final class AppServices {
     }
 
     func stop() async {
+        serviceLifecycleId = nil
         NotificationRouter.shared.detach()
         voice.stop()
         assistant.stopRequests()
         assistant.stop()
         directory.stop()
         agenda.stop()
-        reminders.stop()
+        await reminders.stopAndWait()
         await sync.stop()
     }
 
     /// Freeze all producers; keep the SQLite queue, composer, pending assistant IDs and audio draft.
     func suspendForRecovery() async throws {
+        serviceLifecycleId = nil
         isRecoverySuspended = true
         if recoveryQuiesced {
             await api.retire()
@@ -395,7 +401,7 @@ final class AppServices {
         assistant.stop()
         directory.stop()
         agenda.stop()
-        reminders.stop()
+        await reminders.stopAndWait()
         await api.retire()
         try await sync.suspendForRecovery()
         try await voice.suspendPreservingDraft()

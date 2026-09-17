@@ -76,14 +76,7 @@ struct TaskEditorView: View {
                     footer: isSeries ? "L’heure s’applique à toutes les occurrences." : nil
                 )
                 if draft.schedule?.time != nil {
-                    Section {
-                        Picker("Durée", selection: $draft.durationMinutes) {
-                            Text("Aucune").tag(Int?.none)
-                            ForEach(durationChoices, id: \.self) { minutes in
-                                Text(DurationText.format(minutes)).tag(Int?.some(minutes))
-                            }
-                        }
-                    }
+                    TaskDurationSection(minutes: $draft.durationMinutes)
                 }
                 if !isSeries {
                     TimeValueSection(title: "Échéance", value: $draft.deadline)
@@ -191,10 +184,6 @@ struct TaskEditorView: View {
             .task(id: editedTaskId) { await observeCurrent() }
             .task(id: tagsRetryId) { await observeTagIds() }
         }
-    }
-
-    private var durationChoices: [Int] {
-        Array(Set([15, 30, 45, 60, 90, 120, 180] + (draft.durationMinutes.map { [$0] } ?? []))).sorted()
     }
 
     private var title: String {

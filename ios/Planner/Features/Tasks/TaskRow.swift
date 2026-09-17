@@ -17,6 +17,7 @@ struct TaskRow: View {
     var context: TaskRowContext = .list
     @Environment(AppServices.self) private var services
     @State private var sheet: RowSheet?
+    @State private var errorMessage: String?
 
     init(task: TaskItem, context: TaskRowContext = .list) {
         item = .simple(task)
@@ -136,6 +137,9 @@ struct TaskRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { open(occurrence) }
         .accessibilityActions { menu(occurrence, withLists: false) }
+        .alert("Modification impossible", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(errorMessage ?? "") }
     }
 
     // MARK: - Menu
@@ -363,13 +367,19 @@ struct TaskRow: View {
     private func restore() {
         let task = self.task
         let services = self.services
-        Task { try? await services.tasks.setDeleted(task.id, false) }
+        Task {
+            do { try await services.tasks.setDeleted(task.id, false) }
+            catch { errorMessage = (error as? ProjectMutationError)?.errorDescription ?? "Impossible de restaurer sur cet iPhone. Réessayez." }
+        }
     }
 
     private func plan(_ date: CivilDate) {
         let task = self.task
         let services = self.services
-        Task { try? await services.tasks.reschedule(task, to: date) }
+        Task {
+            do { try await services.tasks.reschedule(task, to: date) }
+            catch { errorMessage = "Impossible de replanifier sur cet iPhone. Réessayez." }
+        }
     }
 
     private func moveToList(_ projectId: String?) {

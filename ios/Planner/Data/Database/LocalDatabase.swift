@@ -8,7 +8,7 @@ nonisolated enum LocalDatabase {
 
     static let schema = Schema(
         Table(name: "projects", columns: [
-            .text("name"), .text("color_key"), .real("sort_order"), .text("archived_at"), .text("deleted_at"),
+            .text("name"), .text("color_key"), .real("sort_order"), .text("archived_at"), .text("deleted_at"), .text("deleted_by_command_id"),
             .integer("revision"), .text("created_at"), .text("updated_at"),
         ]),
         Table(name: "tasks", columns: [
@@ -16,7 +16,7 @@ nonisolated enum LocalDatabase {
             .text("scheduled_date"), .text("scheduled_time"), .text("scheduled_time_zone"), .text("scheduled_start_at"),
             .integer("duration_minutes"),
             .text("deadline_date"), .text("deadline_time"), .text("deadline_time_zone"), .text("deadline_at"),
-            .text("recurrence"), .text("missed_ignored_before"), .text("search_text"), .text("deleted_at"),
+            .text("recurrence"), .text("missed_ignored_before"), .text("search_text"), .text("deleted_at"), .text("deleted_by_command_id"),
             .integer("revision"), .text("created_at"), .text("updated_at"),
         ], indexes: [
             Index.ascending(name: "project", column: "project_id"),
@@ -214,10 +214,12 @@ nonisolated enum Outbox {
         try tx.getOptional(
             sql: """
             SELECT json_extract(data, '$.id') FROM ps_crud
-            WHERE json_extract(data, '$.type') = 'outbox' AND json_extract(data, '$.data.aggregate_id') = ?
+            WHERE json_extract(data, '$.type') = 'outbox' AND (
+              json_extract(data, '$.data.aggregate_id') = ? OR
+              json_extract(data, '$.id') = (SELECT value FROM local_meta WHERE id = ?))
             ORDER BY id DESC LIMIT 1
             """,
-            parameters: [aggregateId]
+            parameters: [aggregateId, "task_project_dependency:" + aggregateId]
         ) { cursor in try cursor.getString(index: 0) }
     }
 

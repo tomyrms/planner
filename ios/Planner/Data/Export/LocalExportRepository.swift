@@ -120,7 +120,8 @@ nonisolated struct LocalExportRepository: Sendable {
     // provider metadata or assistant plans. Civil dates and original IANA zones remain strings.
     private static let projectsSQL = """
         SELECT json_object('id', id, 'name', name, 'colorKey', color_key, 'sortOrder', sort_order,
-          'archivedAt', archived_at, 'deletedAt', deleted_at, 'revision', revision, 'createdAt', created_at, 'updatedAt', updated_at)
+          'archivedAt', archived_at, 'deletedAt', deleted_at, 'deletedByCommandId', deleted_by_command_id,
+          'revision', revision, 'createdAt', created_at, 'updatedAt', updated_at)
         FROM projects ORDER BY created_at, id
         """
     private static let tasksSQL = """
@@ -133,7 +134,7 @@ nonisolated struct LocalExportRepository: Sendable {
           'deadline', CASE WHEN deadline_date IS NULL THEN NULL WHEN deadline_time IS NULL THEN json_object('date', deadline_date) ELSE json_object('date', deadline_date,
             'time', substr(deadline_time, 1, 5), 'timeZone', deadline_time_zone) END,
           'recurrence', CASE WHEN recurrence IS NULL THEN NULL WHEN json_valid(recurrence) THEN json(recurrence) ELSE recurrence END,
-          'missedIgnoredBefore', missed_ignored_before, 'deletedAt', deleted_at, 'revision', revision,
+          'missedIgnoredBefore', missed_ignored_before, 'deletedAt', deleted_at, 'deletedByCommandId', deleted_by_command_id, 'revision', revision,
           'createdAt', created_at, 'updatedAt', updated_at)
         FROM tasks ORDER BY created_at, id
         """

@@ -22,18 +22,20 @@ nonisolated struct TaskRepository: Sendable {
         }
     }
 
-    func observeProjects() throws -> AsyncThrowingStream<[ProjectItem], any Error> {
+    func observeProjects(deleted: Bool = false) throws -> AsyncThrowingStream<[ProjectItem], any Error> {
         try db.watch(
             sql: """
-            SELECT p.id, p.name,
+            SELECT p.id, p.name, p.revision, p.deleted_at,
                    (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.status = 'active') AS active_count
             FROM projects p
-            WHERE p.deleted_at IS NULL AND p.archived_at IS NULL
+            WHERE \(deleted ? "p.deleted_at IS NOT NULL" : "p.deleted_at IS NULL AND p.archived_at IS NULL")
             ORDER BY p.sort_order IS NULL, p.sort_order, p.name COLLATE NOCASE
             """,
             parameters: []
         ) { cursor in
-            ProjectItem(id: try cursor.getString(name: "id"), name: try cursor.getStringOptional(name: "name") ?? "", activeTaskCount: try cursor.getInt(name: "active_count"))
+            ProjectItem(id: try cursor.getString(name: "id"), name: cursor.getStringOptional(name: "name") ?? "",
+                        activeTaskCount: try cursor.getInt(name: "active_count"), revision: cursor.getIntOptional(name: "revision") ?? 0,
+                        deletedAt: Timestamp.parse(cursor.getStringOptional(name: "deleted_at")))
         }
     }
 
@@ -199,9 +201,13 @@ nonisolated struct TaskRepository: Sendable {
         let command = LocalCommand(type: deleted ? "task.delete" : "task.restore", aggregateId: id)
         let now = Timestamp.format(Date())
         try await db.writeTransaction { tx in
+            if !deleted {
+                let blocked = try tx.get(sql: "SELECT count(*) FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ? AND p.deleted_at IS NOT NULL", parameters: [id]) { try $0.getInt(index: 0) }
+                if blocked > 0 { throw ProjectMutationError.restoreListFirst }
+            }
             try tx.execute(
-                sql: "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ?",
-                parameters: [deleted ? now : nil, now, id]
+                sql: "UPDATE tasks SET deleted_at = ?, deleted_by_command_id = ?, updated_at = ? WHERE id = ? AND (deleted_at IS NULL OR ? = 0)",
+                parameters: [deleted ? now : nil, deleted ? command.id : nil, now, id, deleted ? 1 : 0]
             )
             try Outbox.insert(command, in: tx)
         }
@@ -210,7 +216,7 @@ nonisolated struct TaskRepository: Sendable {
     @discardableResult
     func createProject(name: String) async throws -> String {
         let id = UUID().uuidString.lowercased()
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = try Self.validProjectName(name)
         let command = LocalCommand(type: "project.create", aggregateType: "project", aggregateId: id, chaining: .never, payload: ["name": .string(trimmed)])
         let now = Timestamp.format(Date())
         try await db.writeTransaction { tx in

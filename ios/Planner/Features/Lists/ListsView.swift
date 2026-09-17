@@ -7,7 +7,7 @@ struct ListsView: View {
     @State private var creatingTask = false
     @State private var showingSettings = false
     @State private var namingList = false
-    @State private var newListName = ""
+    @State private var editingList: ProjectItem?
 
     var body: some View {
         NavigationStack {
@@ -34,11 +34,8 @@ struct ListsView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            .alert("Nouvelle liste", isPresented: $namingList) {
-                TextField("Nom", text: $newListName)
-                Button("Créer", action: createList)
-                Button("Annuler", role: .cancel) { newListName = "" }
-            }
+            .sheet(isPresented: $namingList) { ProjectEditorView() }
+            .sheet(item: $editingList) { ProjectEditorView(project: $0) }
         }
     }
 
@@ -72,6 +69,9 @@ struct ListsView: View {
                             Label(project.name, systemImage: "list.bullet")
                         }
                     }
+                    .contextMenu {
+                        Button("Modifier la liste", systemImage: "pencil") { editingList = project }
+                    }
                 }
                 Button("Nouvelle liste", systemImage: "plus") { namingList = true }
             }
@@ -90,13 +90,6 @@ struct ListsView: View {
         }
     }
 
-    private func createList() {
-        let name = newListName.trimmingCharacters(in: .whitespacesAndNewlines)
-        newListName = ""
-        guard !name.isEmpty else { return }
-        let tasks = services.tasks
-        Task { _ = try? await tasks.createProject(name: String(name.prefix(200))) }
-    }
 }
 
 /// A list of tasks observed from the local database.
@@ -107,11 +100,15 @@ struct TaskListScreen: View {
     var projectId: String?
     var embedded = false
     @Environment(AppServices.self) private var services
+    @Environment(\.dismiss) private var dismiss
     @State private var tasks: [TaskItem] = []
     @State private var loaded = false
     @State private var creating = false
     @State private var readFailed = false
     @State private var retryId = UUID()
+    @State private var editingList: ProjectItem?
+
+    private var project: ProjectItem? { services.directory.projects.first { $0.id == projectId } }
 
     private struct ObservationKey: Hashable {
         let filter: TaskFilter
@@ -121,6 +118,7 @@ struct TaskListScreen: View {
     var body: some View {
         List {
             if embedded { SyncNotice() }
+            if context == .trash { DeletedProjectsSection() }
             ForEach(tasks) { task in
                 TaskRow(task: task, context: context)
             }
@@ -143,20 +141,29 @@ struct TaskListScreen: View {
                 }
             } else if !loaded {
                 ProgressView("Lecture des tâches…")
-            } else if tasks.isEmpty && (!embedded || (services.sync.hasSynced == true && services.sync.block == nil)) {
+            } else if context != .trash && tasks.isEmpty && (!embedded || (services.sync.hasSynced == true && services.sync.block == nil)) {
                 ContentUnavailableView(emptyTitle, systemImage: emptySymbol)
             }
         }
-        .navigationTitle(embedded ? "Mes tâches" : title)
+        .navigationTitle(embedded ? "Mes tâches" : (project?.name ?? title))
         .toolbar {
             if context == .list {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Ajouter une tâche", systemImage: "plus") { creating = true }
                 }
+                if let project {
+                    ToolbarItem(placement: .secondaryAction) {
+                        Button("Modifier la liste", systemImage: "pencil") { editingList = project }
+                    }
+                }
             }
         }
         .sheet(isPresented: $creating) {
             TaskEditorView(mode: .create(projectId: projectId, schedule: nil))
+        }
+        .sheet(item: $editingList) { ProjectEditorView(project: $0) }
+        .onChange(of: services.directory.projects) { previous, current in
+            if let projectId, previous.contains(where: { $0.id == projectId }), !current.contains(where: { $0.id == projectId }) { dismiss() }
         }
         .task(id: ObservationKey(filter: filter, retryId: retryId)) { await observe() }
     }
@@ -245,6 +252,11 @@ struct SearchResultsView: View {
     let query: String
     @Environment(AppServices.self) private var services
     @State private var tasks: [TaskItem] = []
+    @State private var loaded = false
+    @State private var failed = false
+    @State private var retryId = UUID()
+
+    private struct SearchKey: Hashable { let query: String; let retryId: UUID }
 
     var body: some View {
         let needle = SearchText.normalize([query])
@@ -275,19 +287,36 @@ struct SearchResultsView: View {
             }
         }
         .overlay {
-            if active.isEmpty && completed.isEmpty && lists.isEmpty {
+            if failed {
+                ContentUnavailableView {
+                    Label("Recherche impossible", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("Les tâches n’ont pas pu être lues sur cet iPhone.")
+                } actions: {
+                    Button("Réessayer") { retryId = UUID() }
+                }
+            } else if !loaded {
+                ProgressView("Recherche…")
+            } else if active.isEmpty && completed.isEmpty && lists.isEmpty {
                 ContentUnavailableView.search(text: query)
             }
         }
-        .task(id: query) {
+        .task(id: SearchKey(query: query, retryId: retryId)) {
+            loaded = false
+            failed = false
+            tasks = []
             // A short pause so that each keystroke does not start a new query.
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
             do {
                 for try await rows in try services.tasks.observeTasks(.search(query)) {
+                    try Task.checkCancellation()
                     tasks = rows
+                    loaded = true
                 }
-            } catch {}
+            } catch {
+                if !Task.isCancelled { failed = true; tasks = [] }
+            }
         }
     }
 }

@@ -26,6 +26,17 @@ nonisolated struct TaskSubtask: Codable, Hashable, Identifiable, Sendable {
     static func sorted(_ values: [TaskSubtask]) -> [TaskSubtask] {
         values.sorted { $0.sortOrder == $1.sortOrder ? $0.id.lowercased() < $1.id.lowercased() : $0.sortOrder < $1.sortOrder }
     }
+
+    /// Native list destination is measured before removing the source rows.
+    static func moving(_ values: [TaskSubtask], from source: IndexSet, to destination: Int) -> [TaskSubtask] {
+        guard !source.isEmpty, source.allSatisfy({ values.indices.contains($0) }), (0...values.count).contains(destination) else { return values }
+        let moved = source.sorted().map { values[$0] }
+        var result = values.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        result.insert(contentsOf: moved, at: destination - source.filter { $0 < destination }.count)
+        guard result.map(\.id) != values.map(\.id) else { return values }
+        for index in result.indices { result[index].sortOrder = Double(index) }
+        return result
+    }
 }
 
 nonisolated struct TagItem: Identifiable, Hashable, Sendable {

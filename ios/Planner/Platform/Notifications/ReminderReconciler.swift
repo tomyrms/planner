@@ -14,27 +14,34 @@ final class ReminderReconciler {
     private(set) var authorization: UNAuthorizationStatus = .notDetermined
 
     @ObservationIgnored private let db: any PowerSyncDatabaseProtocol
+    @ObservationIgnored private let notifications: NotificationClient
+    @ObservationIgnored private let debounce: Duration
     @ObservationIgnored private var pass: Task<Void, Never>?
+    @ObservationIgnored private var passId: UUID?
+    @ObservationIgnored private var lifecycleId: UUID?
+    @ObservationIgnored private var requestedPass = UUID()
+    @ObservationIgnored private var running = false
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
 
-    init(db: any PowerSyncDatabaseProtocol) {
+    init(db: any PowerSyncDatabaseProtocol, notifications: NotificationClient = .live, debounce: Duration = .milliseconds(600)) {
         self.db = db
+        self.notifications = notifications
+        self.debounce = debounce
     }
 
     nonisolated static let category = "TASK_REMINDER"
     nonisolated static let completeAction = "COMPLETE"
 
-    func start() {
-        stop()
-        UNUserNotificationCenter.current().setNotificationCategories([
-            UNNotificationCategory(
-                identifier: Self.category,
-                actions: [UNNotificationAction(identifier: Self.completeAction, title: "Terminé", options: [])],
-                intentIdentifiers: [],
-                options: []
-            ),
-        ])
+    func start() async {
+        let lifecycle = UUID()
+        lifecycleId = lifecycle
+        running = false
+        requestedPass = UUID()
+        await drain()
+        guard lifecycleId == lifecycle, !Task.isCancelled else { return }
+        running = true
+        notifications.registerCategory()
         let db = self.db
         // Any change of a task, an occurrence or a reminder (manual, assistant, replication) or a sync
         // rejection (the projection is rolled back) triggers a pass.
@@ -56,6 +63,7 @@ final class ReminderReconciler {
                     ].joined(separator: "|")
                 }
                 for try await _ in stream {
+                    guard !Task.isCancelled, self?.lifecycleId == lifecycle else { return }
                     self?.requestPass()
                 }
             } catch {}
@@ -63,34 +71,80 @@ final class ReminderReconciler {
         let names: [Notification.Name] = [.NSSystemTimeZoneDidChange, .NSCalendarDayChanged, UIApplication.significantTimeChangeNotification]
         for name in names {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.requestPass() }
+                Task { @MainActor in
+                    guard self?.lifecycleId == lifecycle else { return }
+                    self?.requestPass()
+                }
             })
         }
         requestPass()
     }
 
-    func stop() {
-        for listener in listeners { listener.cancel() }
+    /// Recovery may replace the database only after this returns. Cancellation alone cannot stop an
+    /// in-flight UNUserNotificationCenter.add: the worker awaits it and removes its obsolete additions.
+    func stopAndWait() async {
+        lifecycleId = nil
+        running = false
+        requestedPass = UUID()
+        await drain()
+    }
+
+    private func drain() async {
+        let stoppingListeners = listeners
+        for listener in stoppingListeners { listener.cancel() }
         listeners.removeAll()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
+        let stoppingPass = pass
+        stoppingPass?.cancel()
+        await stoppingPass?.value
+        for listener in stoppingListeners { await listener.value }
     }
 
     /// Debounced: several changes in a row give one pass.
     func requestPass() {
-        pass?.cancel()
+        guard running else { return }
+        requestedPass = UUID()
+        guard pass == nil else { return }
+        let id = UUID()
+        passId = id
         pass = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            await self?.reconcile()
+            await self?.runPasses(id: id)
         }
+    }
+
+    /// Wait for the current scheduling work without starting a pass (also useful before inspecting a result).
+    func waitForPendingPass() async { await pass?.value }
+
+    private func runPasses(id: UUID) async {
+        defer {
+            if passId == id { pass = nil; passId = nil }
+        }
+        while running && !Task.isCancelled {
+            let request = requestedPass
+            do { try await Task.sleep(for: debounce) } catch { return }
+            guard running, !Task.isCancelled else { return }
+            guard request == requestedPass else { continue }
+            await reconcile(request: request)
+            // An invalidation during a system call only marks another pass as necessary. This same
+            // worker drains the old call and its cleanup before reading/applying the new snapshot.
+            if request == requestedPass { return }
+        }
+    }
+
+    private func isCurrent(_ request: UUID) -> Bool {
+        running && !Task.isCancelled && request == requestedPass
     }
 
     /// Asked when the first reminder is created, never at launch (§1.9).
     func requestAuthorizationIfNeeded() async {
-        if await Self.authorizationStatus() == .notDetermined {
-            await Self.requestAuthorization()
+        guard running, let lifecycle = lifecycleId else { return }
+        let status = await notifications.authorizationStatus()
+        guard running, lifecycleId == lifecycle, !Task.isCancelled else { return }
+        if status == .notDetermined {
+            await notifications.requestAuthorization()
         }
+        guard lifecycleId == lifecycle, !Task.isCancelled else { return }
         requestPass()
     }
 
@@ -107,37 +161,87 @@ final class ReminderReconciler {
 
     // MARK: - Pass
 
-    private func reconcile() async {
-        let status = await Self.authorizationStatus()
+    private func reconcile(request: UUID) async {
+        let status = await notifications.authorizationStatus()
+        guard isCurrent(request) else { return }
         authorization = status
         let authorized = [.authorized, .provisional, .ephemeral].contains(status)
         guard let snapshot = try? await Self.loadSnapshot(db) else { return }
+        guard isCurrent(request) else { return }
         let now = Date()
         let zone = TimeZone.current
         let candidates = Self.candidates(snapshot, now: now, zone: zone)
-        let pending = await Self.pendingRequests()
+        let pending = await notifications.pendingRequests()
+        guard isCurrent(request) else { return }
         let acceptances = (try? await Self.loadAcceptances(db)) ?? [:]
+        guard isCurrent(request) else { return }
         let plan = ReminderMath.plan(
             now: now, zone: zone, authorized: authorized,
             candidates: candidates.map(\.candidate), systemPending: pending, acceptances: acceptances
         )
         if !plan.remove.isEmpty {
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: plan.remove)
+            await notifications.removePending(plan.remove)
+            guard isCurrent(request) else { return }
         }
         var states = plan.states
         let byId = Dictionary(candidates.map { ($0.candidate.notificationId, $0) }, uniquingKeysWith: { first, _ in first })
         var accepted: [(String, Date)] = []
-        for request in plan.addOrReplace {
-            guard let source = byId[request.notificationId] else { continue }
-            if await Self.add(request, source: source) {
-                accepted.append((request.notificationId, request.triggerAt))
-                states[request.notificationId] = .scheduled
+        for notification in plan.addOrReplace {
+            guard isCurrent(request) else {
+                await notifications.removePending(accepted.map { $0.0 })
+                return
+            }
+            guard let source = byId[notification.notificationId] else { continue }
+            if await notifications.add(notification, source) {
+                accepted.append((notification.notificationId, notification.triggerAt))
+                states[notification.notificationId] = .scheduled
             } else {
-                states[request.notificationId] = .needsScheduling
+                states[notification.notificationId] = .needsScheduling
+            }
+            guard isCurrent(request) else {
+                await notifications.removePending(accepted.map { $0.0 })
+                return
             }
         }
+        guard isCurrent(request) else { return }
+        // All adds have completed while this snapshot was current. The proofs remain true if a
+        // later invalidation arrives during this local write; stopAndWait still waits for it.
         try? await Self.recordAcceptances(accepted, now: now, in: db)
+        guard isCurrent(request) else { return }
         self.states = states
+    }
+
+    /// Only notification effects are substituted in tests; SQLite snapshots and acceptance proofs
+    /// still use the real repository. Async removal includes a system readback before the worker ends.
+    struct NotificationClient {
+        var registerCategory: @MainActor () -> Void
+        var authorizationStatus: @MainActor () async -> UNAuthorizationStatus
+        var requestAuthorization: @MainActor () async -> Void
+        var pendingRequests: @MainActor () async -> [ReminderMath.Request]
+        var add: @MainActor (ReminderMath.Request, Source) async -> Bool
+        var removePending: @MainActor ([String]) async -> Void
+
+        static var live: Self {
+            Self(
+                registerCategory: {
+                    UNUserNotificationCenter.current().setNotificationCategories([
+                        UNNotificationCategory(identifier: category,
+                            actions: [UNNotificationAction(identifier: completeAction, title: "Terminé", options: [])],
+                            intentIdentifiers: [], options: []),
+                    ])
+                },
+                authorizationStatus: { await ReminderReconciler.authorizationStatus() },
+                requestAuthorization: { await ReminderReconciler.requestAuthorization() },
+                pendingRequests: { await ReminderReconciler.pendingRequests() },
+                add: { request, source in await ReminderReconciler.add(request, source: source) },
+                removePending: { ids in
+                    guard !ids.isEmpty else { return }
+                    let center = UNUserNotificationCenter.current()
+                    center.removePendingNotificationRequests(withIdentifiers: ids)
+                    _ = await center.pendingNotificationRequests()
+                }
+            )
+        }
     }
 
     // MARK: - System (plain values only cross the actor boundary)
@@ -183,50 +287,52 @@ final class ReminderReconciler {
     }
 
     nonisolated static func loadSnapshot(_ db: any PowerSyncDatabaseProtocol) async throws -> Snapshot {
-        var snapshot = Snapshot()
-        let tasks = try await db.getAll(
-            sql: "SELECT \(TaskItem.selectColumns) FROM tasks WHERE id IN (SELECT task_id FROM reminders)",
-            parameters: []
-        ) { cursor in try TaskItem(row: cursor) }
-        snapshot.tasks = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        snapshot.reminders = try await db.getAll(
-            sql: "SELECT id, task_id, occurrence_key, kind, offset_minutes, local_time, absolute_date, absolute_time, absolute_time_zone, state FROM reminders",
-            parameters: []
-        ) { cursor in
-            ReminderRow(
-                id: try cursor.getString(name: "id"),
-                taskId: try cursor.getStringOptional(name: "task_id") ?? "",
-                occurrenceKey: try cursor.getStringOptional(name: "occurrence_key"),
-                rule: ReminderRule(
-                    kind: try cursor.getStringOptional(name: "kind"), offsetMinutes: try cursor.getIntOptional(name: "offset_minutes"),
-                    localTime: try cursor.getStringOptional(name: "local_time"), absoluteDate: try cursor.getStringOptional(name: "absolute_date"),
-                    absoluteTime: try cursor.getStringOptional(name: "absolute_time"), absoluteZone: try cursor.getStringOptional(name: "absolute_time_zone")
-                ) ?? .beforeStart(minutes: 0),
-                baseMissing: try cursor.getStringOptional(name: "state") == "inactive_base_missing"
-            )
+        try await db.readTransaction { tx in
+            var snapshot = Snapshot()
+            let tasks = try tx.getAll(
+                sql: "SELECT \(TaskItem.selectColumns) FROM tasks WHERE id IN (SELECT task_id FROM reminders)",
+                parameters: []
+            ) { cursor in try TaskItem(row: cursor) }
+            snapshot.tasks = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            snapshot.reminders = try tx.getAll(
+                sql: "SELECT id, task_id, occurrence_key, kind, offset_minutes, local_time, absolute_date, absolute_time, absolute_time_zone, state FROM reminders",
+                parameters: []
+            ) { cursor in
+                ReminderRow(
+                    id: try cursor.getString(name: "id"),
+                    taskId: try cursor.getStringOptional(name: "task_id") ?? "",
+                    occurrenceKey: try cursor.getStringOptional(name: "occurrence_key"),
+                    rule: ReminderRule(
+                        kind: try cursor.getStringOptional(name: "kind"), offsetMinutes: try cursor.getIntOptional(name: "offset_minutes"),
+                        localTime: try cursor.getStringOptional(name: "local_time"), absoluteDate: try cursor.getStringOptional(name: "absolute_date"),
+                        absoluteTime: try cursor.getStringOptional(name: "absolute_time"), absoluteZone: try cursor.getStringOptional(name: "absolute_time_zone")
+                    ) ?? .beforeStart(minutes: 0),
+                    baseMissing: try cursor.getStringOptional(name: "state") == "inactive_base_missing"
+                )
+            }
+            let rows = try tx.getAll(
+                sql: """
+                SELECT task_id, occurrence_key, status, completed_at, override_date, override_time, override_time_zone, successor_occurrence_key
+                FROM task_occurrences WHERE task_id IN (SELECT task_id FROM reminders)
+                """,
+                parameters: []
+            ) { cursor in
+                OccurrenceRow(
+                    taskId: try cursor.getString(name: "task_id"),
+                    key: try cursor.getString(name: "occurrence_key"),
+                    status: OccurrenceStatus(rawValue: try cursor.getStringOptional(name: "status") ?? "") ?? .open,
+                    completedAt: nil,
+                    override: TimeValue(
+                        date: try cursor.getStringOptional(name: "override_date"),
+                        time: try cursor.getStringOptional(name: "override_time"),
+                        timeZone: try cursor.getStringOptional(name: "override_time_zone")
+                    ),
+                    successorKey: try cursor.getStringOptional(name: "successor_occurrence_key")
+                )
+            }
+            snapshot.occurrences = Dictionary(grouping: rows, by: \.taskId)
+            return snapshot
         }
-        let rows = try await db.getAll(
-            sql: """
-            SELECT task_id, occurrence_key, status, completed_at, override_date, override_time, override_time_zone, successor_occurrence_key
-            FROM task_occurrences WHERE task_id IN (SELECT task_id FROM reminders)
-            """,
-            parameters: []
-        ) { cursor in
-            OccurrenceRow(
-                taskId: try cursor.getString(name: "task_id"),
-                key: try cursor.getString(name: "occurrence_key"),
-                status: OccurrenceStatus(rawValue: try cursor.getStringOptional(name: "status") ?? "") ?? .open,
-                completedAt: nil,
-                override: TimeValue(
-                    date: try cursor.getStringOptional(name: "override_date"),
-                    time: try cursor.getStringOptional(name: "override_time"),
-                    timeZone: try cursor.getStringOptional(name: "override_time_zone")
-                ),
-                successorKey: try cursor.getStringOptional(name: "successor_occurrence_key")
-            )
-        }
-        snapshot.occurrences = Dictionary(grouping: rows, by: \.taskId)
-        return snapshot
     }
 
     /// One candidate per reminder, or per open occurrence of a series in the window.

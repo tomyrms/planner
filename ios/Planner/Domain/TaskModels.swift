@@ -65,6 +65,8 @@ nonisolated struct ProjectItem: Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     var activeTaskCount: Int
+    var revision: Int = 0
+    var deletedAt: Date? = nil
 }
 
 /// Which tasks a screen observes.
@@ -124,6 +126,7 @@ nonisolated struct TaskDraft: Equatable, Sendable {
     var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     var isValid: Bool {
         !trimmedTitle.isEmpty && trimmedTitle.count <= 500 && notes.count <= 10_000
+            && (durationMinutes.map { (1...1440).contains($0) } ?? true)
             && TaskSubtask.areValid(subtasks)
             && tagIds.allSatisfy { UUID(uuidString: $0) != nil }
     }
