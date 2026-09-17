@@ -1,6 +1,8 @@
 import { reminderColumns } from '../../domain/derive.js';
 import { reminders, tasks } from '../../../infrastructure/db/schema.js';
 import { CommandRejection, type Handler } from '../types.js';
+import { normalizeSubtask, orderedSubtasks } from '../../domain/details.js';
+import { insertInitialTaskTags, requireTags } from './details.js';
 import {
   assertLive, assertNewAggregate, checkReminder, deadlineColumns, lockLists, lockTask, noop, payloadOf,
   refreshReminderStates, requireLiveList, revisionOf, saveTask, sameTime, scheduleColumns, searchTextFor,
@@ -17,6 +19,10 @@ export const taskCreate: Handler = async (context) => {
   const schedule = payload.schedule ?? null;
   const deadline = payload.deadline ?? null;
   const recurrence = payload.recurrence ?? null;
+  const subtasks = orderedSubtasks((payload.subtasks ?? []).map(normalizeSubtask));
+  if (new Set(subtasks.map((item) => item.id)).size !== subtasks.length) throw new CommandRejection('VALIDATION_FAILED');
+  if (recurrence !== null && subtasks.length > 0) throw new CommandRejection('SUBTASKS_ON_RECURRING_TASK');
+  const tagIds = await requireTags(context, payload.tagIds ?? []);
   if (recurrence !== null) {
     if (schedule === null) throw new CommandRejection('VALIDATION_FAILED');
     if (deadline !== null) throw new CommandRejection('RECURRING_TASK_DEADLINE_UNSUPPORTED');
@@ -36,11 +42,12 @@ export const taskCreate: Handler = async (context) => {
   const notes = payload.notes ?? null;
   const inserted = await context.db.insert(tasks).values({
     ...columns, id: context.aggregateId, userId: context.actor.userId, projectId: list?.id ?? null,
-    title: payload.title, notes, priority: payload.priority ?? 'none', recurrence,
+    title: payload.title, notes, priority: payload.priority ?? 'none', recurrence, subtasks,
     durationMinutes: payload.durationMinutes ?? null,
     searchText: searchTextFor({ title: payload.title, notes }, list),
   }).onConflictDoNothing().returning({ id: tasks.id });
   if (inserted.length === 0) throw new CommandRejection('ENTITY_ALREADY_EXISTS');
+  await insertInitialTaskTags(context, tagIds);
   if (reminderInputs.length > 0) {
     const created = await context.db.insert(reminders).values(reminderInputs.map((reminder) => ({
       ...reminderColumns(reminder.rule), id: reminder.id.toLowerCase(), userId: context.actor.userId,

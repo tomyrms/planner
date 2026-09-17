@@ -33,6 +33,8 @@ export interface EvalCase {
   category: string;
   message: string;
   setup?: Array<{ name: string; payload: Record<string, Json> }>;
+  tags?: Array<{ name: string; label: string }>;
+  autoTags?: boolean;
   expect: EvalExpectation;
   script: Array<{ call: Array<{ name: string; arguments: Json }> } | { reply: string } | { error: string }>;
 }
@@ -56,7 +58,7 @@ export function loadEvalSet(path = new URL('../fixtures/assistant/eval-v1.json',
   return JSON.parse(readFileSync(path, 'utf8')) as EvalSet;
 }
 
-function resolver(set: EvalSet, tasks: Map<string, string>) {
+function resolver(set: EvalSet, tasks: Map<string, string>, tags: Map<string, string>) {
   const today = Temporal.Instant.from(new Date(set.referenceInstant).toISOString()).toZonedDateTimeISO(set.timeZone).toPlainDate();
   const resolve = (value: Json): Json => {
     if (typeof value === 'string') {
@@ -65,6 +67,11 @@ function resolver(set: EvalSet, tasks: Map<string, string>) {
       if (value.startsWith('$task:')) {
         const id = tasks.get(value.slice('$task:'.length));
         if (!id) throw new Error(`Unknown task symbol ${value}`);
+        return id;
+      }
+      if (value.startsWith('$tag:')) {
+        const id = tags.get(value.slice('$tag:'.length));
+        if (!id) throw new Error(`Unknown tag symbol ${value}`);
         return id;
       }
       return value;
@@ -110,7 +117,24 @@ export async function runCase(pool: pg.Pool, set: EvalSet, evalCase: EvalCase, o
 
   const userId = (await pool.query<{ id: string }>("INSERT INTO users (default_time_zone) VALUES ($1) RETURNING id", [set.timeZone])).rows[0]!.id;
   const tasks = new Map<string, string>();
-  const resolve = resolver(set, tasks);
+  const tags = new Map<string, string>();
+  const resolve = resolver(set, tasks, tags);
+  for (const item of evalCase.tags ?? []) {
+    const id = randomUUID();
+    tags.set(item.name, id);
+    const result = await executeCommand(pool, { userId, deviceId: null, origin: 'manual' }, {
+      clientCommandId: randomUUID(), type: 'tag.create', payloadVersion: 1, aggregate: { type: 'tag', id },
+      clientRecordedAt: '2026-09-16T08:00:00Z', payload: { name: item.label },
+    });
+    if (result.outcome !== 'applied') throw new Error(`${evalCase.id}: tag setup failed`);
+  }
+  if (evalCase.autoTags !== undefined) {
+    const result = await executeCommand(pool, { userId, deviceId: null, origin: 'manual' }, {
+      clientCommandId: randomUUID(), type: 'settings.patch', payloadVersion: 1, aggregate: { type: 'settings', id: userId },
+      clientRecordedAt: '2026-09-16T08:00:00Z', payload: { set: { autoTags: evalCase.autoTags } },
+    });
+    if (result.outcome !== 'applied') throw new Error(`${evalCase.id}: settings setup failed`);
+  }
   for (const item of evalCase.setup ?? []) tasks.set(item.name, randomUUID());
   for (const item of evalCase.setup ?? []) {
     const result = await executeCommand(pool, { userId, deviceId: null, origin: 'manual' }, {
@@ -143,7 +167,9 @@ export async function runCase(pool: pg.Pool, set: EvalSet, evalCase: EvalCase, o
     if (expect.riskClassIn && !expect.riskClassIn.includes(snapshot.riskClass)) failures.push(`risk ${snapshot.riskClass} ∉ ${expect.riskClassIn.join('|')}`);
     if (expect.created) {
       const { rows } = await pool.query(`SELECT t.title, t.scheduled_date::text AS scheduled_date, t.scheduled_time::text AS scheduled_time,
-          t.deadline_date::text AS deadline_date, t.duration_minutes,
+          t.deadline_date::text AS deadline_date, t.deadline_time::text AS deadline_time, t.duration_minutes, jsonb_array_length(t.subtasks) AS subtask_count,
+          ARRAY(SELECT tg.name FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id
+            WHERE tt.task_id = t.id AND tt.deleted_at IS NULL AND tg.deleted_at IS NULL ORDER BY tg.name) AS tag_names,
           (SELECT count(*)::int FROM reminders r WHERE r.task_id = t.id AND r.deleted_at IS NULL) AS reminders
         FROM tasks t WHERE t.user_id = $1 AND NOT (t.id = ANY($2::uuid[]))`, [userId, [...tasks.values()]]);
       if (rows.length !== expect.created.length) failures.push(`${rows.length} tasks created, expected ${expect.created.length}`);

@@ -101,6 +101,8 @@ async function removeOrphanJournal(client: pg.PoolClient): Promise<number> {
       WHERE a.turn_id IS NULL AND a.proposal_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM tasks t WHERE a.aggregate_type = 'task' AND t.id = a.aggregate_id AND t.user_id = a.user_id)
         AND NOT EXISTS (SELECT 1 FROM projects p WHERE a.aggregate_type = 'project' AND p.id = a.aggregate_id AND p.user_id = a.user_id)
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE a.aggregate_type = 'tag' AND t.id = a.aggregate_id AND t.user_id = a.user_id)
+        AND NOT EXISTS (SELECT 1 FROM user_settings s WHERE a.aggregate_type = 'settings' AND s.id = a.aggregate_id AND s.id = a.user_id)
       RETURNING a.id`);
   const actionIds = actions.rows.map((row) => row.id);
   if (actionIds.length > 0) await client.query('DELETE FROM assistant_undos WHERE action_id = ANY($1::uuid[])', [actionIds]);

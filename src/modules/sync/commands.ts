@@ -16,7 +16,7 @@ export const rawCommandSchema = z.strictObject({
   clientCommandId: z.uuid(),
   type: z.string().min(1).max(64),
   payloadVersion: z.number().int().min(1).max(1000),
-  aggregate: z.strictObject({ type: z.enum(['task', 'project']), id: z.uuid() }),
+  aggregate: z.strictObject({ type: z.enum(['task', 'project', 'tag', 'settings']), id: z.uuid() }),
   precondition: preconditionSchema.optional(),
   clientRecordedAt: z.iso.datetime({ offset: true }),
   payload: z.record(z.string(), z.unknown()).optional(),
@@ -43,6 +43,8 @@ const nonEmpty = (value: Record<string, unknown>) => Object.keys(value).length >
 const projectName = z.string().trim().min(1).max(200);
 const colorKey = z.string().min(1).max(64);
 const sortOrder = z.number().finite();
+const subtaskInput = z.strictObject({ id: z.uuid(), title, isCompleted: z.boolean().optional(), sortOrder: sortOrder.optional() });
+const tagName = z.string().trim().min(1).max(50);
 
 /** Payload schemas for payloadVersion 1. A missing type/version pair is rejected explicitly. */
 export const payloadSchemasV1 = {
@@ -56,6 +58,8 @@ export const payloadSchemasV1 = {
     durationMinutes: durationMinutesSchema.optional(),
     recurrence: recurrenceSchema.nullable().optional(),
     reminders: z.array(reminderInput).max(10).optional(),
+    subtasks: z.array(subtaskInput).max(50).optional(),
+    tagIds: z.array(z.uuid()).max(10).optional(),
   }),
   'task.patch': z.strictObject({
     set: z.strictObject({
@@ -72,6 +76,13 @@ export const payloadSchemasV1 = {
   'task.reopen': z.strictObject({}),
   'task.delete': z.strictObject({}),
   'task.restore': z.strictObject({}),
+  'task.subtask.add': z.strictObject({ subtask: subtaskInput }),
+  'task.subtask.patch': z.strictObject({ subtaskId: z.uuid(), set: z.strictObject({
+    title: title.optional(), isCompleted: z.boolean().optional(), sortOrder: sortOrder.optional(),
+  }).refine(nonEmpty, 'Empty patch') }),
+  'task.subtask.remove': z.strictObject({ subtaskId: z.uuid() }),
+  'task.tag.add': z.strictObject({ tagId: z.uuid() }),
+  'task.tag.remove': z.strictObject({ tagId: z.uuid() }),
   'occurrence.complete': z.strictObject({ occurrenceKey: occurrenceKeySchema, actionLocalDate: civilDateSchema }),
   'occurrence.skip': z.strictObject({ occurrenceKey: occurrenceKeySchema, actionLocalDate: civilDateSchema }),
   'occurrence.reopen': z.strictObject({ occurrenceKey: occurrenceKeySchema }),
@@ -99,25 +110,33 @@ export const payloadSchemasV1 = {
   'project.unarchive': z.strictObject({}),
   'project.delete': z.strictObject({ taskPolicy: z.enum(['move_tasks_to_inbox', 'trash_tasks_with_project']) }),
   'project.restore': z.strictObject({}),
+  'tag.create': z.strictObject({ name: tagName }),
+  'tag.patch': z.strictObject({ set: z.strictObject({ name: tagName }) }),
+  'tag.delete': z.strictObject({}),
+  'tag.restore': z.strictObject({}),
+  'settings.patch': z.strictObject({ set: z.strictObject({ autoTags: z.boolean() }) }),
 } as const;
 
 export type CommandType = keyof typeof payloadSchemasV1;
 export type PayloadOf<T extends CommandType> = z.infer<(typeof payloadSchemasV1)[T]>;
 
-export const commandAggregate: Record<CommandType, 'task' | 'project'> = {
+export const commandAggregate: Record<CommandType, RawCommand['aggregate']['type']> = {
   'task.create': 'task', 'task.patch': 'task', 'task.complete': 'task', 'task.reopen': 'task',
   'task.delete': 'task', 'task.restore': 'task',
+  'task.subtask.add': 'task', 'task.subtask.patch': 'task', 'task.subtask.remove': 'task',
+  'task.tag.add': 'task', 'task.tag.remove': 'task',
   'occurrence.complete': 'task', 'occurrence.skip': 'task', 'occurrence.reopen': 'task',
   'occurrence.reschedule': 'task', 'occurrence.skip_missed_before': 'task',
   'series.update': 'task', 'series.end': 'task', 'reminder.set': 'task', 'reminder.remove': 'task',
   'project.create': 'project', 'project.patch': 'project', 'project.archive': 'project',
   'project.unarchive': 'project', 'project.delete': 'project', 'project.restore': 'project',
+  'tag.create': 'tag', 'tag.patch': 'tag', 'tag.delete': 'tag', 'tag.restore': 'tag', 'settings.patch': 'settings',
 };
 
 /** Commands whose risk requires the client to prove what it last saw. */
 export const preconditionRequired = new Set<CommandType>(['series.update', 'series.end', 'project.delete']);
 /** Creation cannot depend on an earlier state. */
-export const preconditionForbidden = new Set<CommandType>(['task.create', 'project.create']);
+export const preconditionForbidden = new Set<CommandType>(['task.create', 'project.create', 'tag.create']);
 
 export function isCommandType(type: string): type is CommandType {
   return Object.hasOwn(payloadSchemasV1, type);

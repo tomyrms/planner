@@ -19,7 +19,7 @@ export async function buildExport(pool: pg.Pool, userId: string, now: Date = new
       FROM projects WHERE user_id = $1 ORDER BY created_at, id`);
     const tasks = await read(`SELECT id, project_id, title, notes, priority, status, completed_at,
         scheduled_date::text, scheduled_time::text, scheduled_time_zone, duration_minutes,
-        deadline_date::text, deadline_time::text, deadline_time_zone, recurrence, missed_ignored_before::text,
+        deadline_date::text, deadline_time::text, deadline_time_zone, recurrence, subtasks, missed_ignored_before::text,
         deleted_at, revision::text, created_at, updated_at
       FROM tasks WHERE user_id = $1 ORDER BY created_at, id`);
     const occurrences = await read(`SELECT id, task_id, occurrence_key, status, completed_at,
@@ -31,9 +31,13 @@ export async function buildExport(pool: pg.Pool, userId: string, now: Date = new
     const reminders = await read(`SELECT id, task_id, occurrence_key, kind, offset_minutes, local_time::text,
         absolute_date::text, absolute_time::text, absolute_time_zone, state, deleted_at, created_at, updated_at
       FROM reminders WHERE user_id = $1 ORDER BY task_id, id`);
+    const tags = await read('SELECT id, name, revision::text, deleted_at, created_at, updated_at FROM tags WHERE user_id = $1 ORDER BY created_at, id');
+    const taskTags = await read('SELECT id, task_id, tag_id, deleted_at, created_at, updated_at FROM task_tags WHERE user_id = $1 ORDER BY task_id, tag_id');
+    const [settings] = await read('SELECT auto_tags, revision::text, created_at, updated_at FROM user_settings WHERE id = $1');
     await client.query('COMMIT');
     return {
       exportVersion: EXPORT_VERSION,
+      taskDetailsVersion: 1,
       exportedAt: now.toISOString(),
       serverGeneration: meta!.generation,
       projects: projects.map((row) => ({
@@ -45,9 +49,21 @@ export async function buildExport(pool: pg.Pool, userId: string, now: Date = new
         id: row.id, projectId: row.project_id, title: row.title, notes: row.notes, priority: row.priority,
         status: row.status, completedAt: iso(row.completed_at),
         schedule: time(row, 'scheduled'), durationMinutes: row.duration_minutes, deadline: time(row, 'deadline'),
-        recurrence: row.recurrence, missedIgnoredBefore: row.missed_ignored_before,
+        recurrence: row.recurrence, subtasks: row.subtasks, missedIgnoredBefore: row.missed_ignored_before,
         deletedAt: iso(row.deleted_at), revision: Number(row.revision), createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
       })),
+      tags: tags.map((row) => ({
+        id: row.id, name: row.name, revision: Number(row.revision), deletedAt: iso(row.deleted_at),
+        createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+      })),
+      taskTags: taskTags.map((row) => ({
+        id: row.id, taskId: row.task_id, tagId: row.tag_id, deletedAt: iso(row.deleted_at),
+        createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+      })),
+      assistantSettings: {
+        autoTags: settings?.auto_tags ?? false, revision: Number(settings?.revision ?? 1),
+        createdAt: iso(settings?.created_at ?? null), updatedAt: iso(settings?.updated_at ?? null),
+      },
       taskOccurrences: occurrences.map((row) => ({
         id: row.id, taskId: row.task_id, occurrenceKey: row.occurrence_key, status: row.status,
         completedAt: iso(row.completed_at), override: time(row, 'override'),

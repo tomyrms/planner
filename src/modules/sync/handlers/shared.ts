@@ -33,15 +33,15 @@ export function retryable(): Error {
 }
 
 /** Missing aggregate: purged if a tombstone remains, unknown otherwise. Other users' rows are never revealed. */
-export async function rejectMissing(context: CommandContext, entityType: 'task' | 'project', id: string): Promise<never> {
+export async function rejectMissing(context: CommandContext, entityType: 'task' | 'project' | 'tag', id: string): Promise<never> {
   const [tombstone] = await context.db.select({ id: tombstones.entityId }).from(tombstones)
     .where(and(eq(tombstones.entityType, entityType), eq(tombstones.entityId, id), eq(tombstones.userId, context.actor.userId)));
   throw new CommandRejection(tombstone ? 'ENTITY_PURGED' : 'ENTITY_NOT_FOUND');
 }
 
 /** Creation never reuses an identifier, even a purged one. */
-export async function assertNewAggregate(context: CommandContext, entityType: 'task' | 'project'): Promise<void> {
-  const table = entityType === 'task' ? 'tasks' : 'projects';
+export async function assertNewAggregate(context: CommandContext, entityType: 'task' | 'project' | 'tag'): Promise<void> {
+  const table = { task: 'tasks', project: 'projects', tag: 'tags' }[entityType];
   const existing = await context.client.query(`SELECT 1 FROM ${table} WHERE id = $1`, [context.aggregateId]);
   if (existing.rowCount) throw new CommandRejection('ENTITY_ALREADY_EXISTS');
   const purged = await context.client.query('SELECT 1 FROM tombstones WHERE entity_type = $1 AND entity_id = $2', [entityType, context.aggregateId]);

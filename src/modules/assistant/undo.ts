@@ -47,6 +47,25 @@ export function compensationFor(action: ActionRow, localDate: string): Compensat
       const set = pick(changes, PATCHABLE);
       return Object.keys(set).length > 0 ? [draft('task.patch', { set })] : null;
     }
+    case 'task.tag.add':
+    case 'task.tag.remove': {
+      const items = Object.entries(changes).filter(([field]) => field.startsWith('tag:'));
+      return items.length ? items.map(([field, change]) => draft(change.before === null ? 'task.tag.remove' : 'task.tag.add', { tagId: field.slice('tag:'.length) })) : null;
+    }
+    case 'task.subtask.add':
+    case 'task.subtask.patch':
+    case 'task.subtask.remove': {
+      const items = Object.entries(changes).filter(([field]) => field.startsWith('subtask:'));
+      return items.length ? items.map(([field, change]) => {
+        const subtaskId = field.slice('subtask:'.length);
+        if (change.before === null) return draft('task.subtask.remove', { subtaskId });
+        const before = change.before as { id: string; title: string; isCompleted: boolean; sortOrder: number };
+        if (change.after === null) return draft('task.subtask.add', { subtask: before });
+        const after = change.after as typeof before;
+        const set = Object.fromEntries((['title', 'isCompleted', 'sortOrder'] as const).filter((key) => before[key] !== after[key]).map((key) => [key, before[key]]));
+        return draft('task.subtask.patch', { subtaskId, set });
+      }) : null;
+    }
     case 'task.complete': return [draft('task.reopen')];
     case 'task.reopen': return [draft('task.complete')];
     case 'task.delete': return [draft('task.restore')];

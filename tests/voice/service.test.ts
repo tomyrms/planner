@@ -190,7 +190,12 @@ describe('voice transcription service', () => {
     expect(provider.requests).toHaveLength(1);
     expect(await files()).toEqual([`${pending.id}.m4a`]);
     release();
-    await eventually(async () => (await service.snapshot(me.userId, pending.id)).status === 'completed');
+    // The durable transcript commits before file removal and its separate deletion receipt.
+    // Wait for both observable outcomes; completed alone deliberately does not promise cleanup.
+    await eventually(async () => {
+      const snapshot = await service.snapshot(me.userId, pending.id);
+      return snapshot.status === 'completed' && snapshot.audioDeleted === true;
+    });
     expect(await service.snapshot(me.userId, pending.id)).toMatchObject({ text: 'Plus tard.', audioDeleted: true });
     expect(await files()).toEqual([]);
   });

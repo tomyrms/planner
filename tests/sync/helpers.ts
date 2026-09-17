@@ -11,7 +11,7 @@ export function command(type: string, aggregateId: string, payload?: Record<stri
     clientCommandId: randomUUID(),
     type,
     payloadVersion: 1,
-    aggregate: { type: type.startsWith('project.') ? 'project' : 'task', id: aggregateId },
+    aggregate: { type: type.startsWith('project.') ? 'project' : type.startsWith('tag.') ? 'tag' : type.startsWith('settings.') ? 'settings' : 'task', id: aggregateId },
     clientRecordedAt: RECORDED_AT,
     ...(payload === undefined ? {} : { payload }),
     ...extra,

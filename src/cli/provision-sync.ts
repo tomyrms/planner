@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 import { z } from 'zod';
 import { createPool } from '../infrastructure/db/pool.js';
-import { defaultSyncProvisioning, provisionSync } from '../infrastructure/db/provision-sync.js';
+import { defaultSyncProvisioning, provisionSync, SYNC_TABLES } from '../infrastructure/db/provision-sync.js';
 
 // Needs only the owner URL and the two PowerSync passwords; never prints a secret.
 if (existsSync('.env')) loadEnvFile('.env');
@@ -22,7 +22,7 @@ try {
     replicationPassword: parsed.data.PLANNER_POWERSYNC_PASSWORD,
     storagePassword: parsed.data.PLANNER_POWERSYNC_STORAGE_PASSWORD,
   });
-  console.log('PowerSync provisionné : rôle de réplication en lecture seule, publication « powersync » (10 tables), base de stockage séparée.');
+  console.log(`PowerSync provisionné : rôle de réplication en lecture seule, publication « powersync » (${SYNC_TABLES.length} tables), base de stockage séparée.`);
 } finally {
   await pool.end();
 }

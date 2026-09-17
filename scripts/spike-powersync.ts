@@ -29,8 +29,11 @@ const schema = new Schema({
     project_id: text, title: text, notes: text, priority: text, status: text, completed_at: text,
     scheduled_date: text, scheduled_time: text, scheduled_time_zone: text, scheduled_start_at: text, duration_minutes: integer,
     deadline_date: text, deadline_time: text, deadline_time_zone: text, deadline_at: text,
-    recurrence: text, missed_ignored_before: text, search_text: text, deleted_at: text, revision: integer, created_at: text, updated_at: text,
+    recurrence: text, subtasks: text, missed_ignored_before: text, search_text: text, deleted_at: text, revision: integer, created_at: text, updated_at: text,
   }),
+  tags: new Table({ name: text, normalized_name: text, revision: integer, deleted_at: text, created_at: text, updated_at: text }),
+  task_tags: new Table({ task_id: text, tag_id: text, deleted_at: text, created_at: text, updated_at: text }),
+  user_settings: new Table({ auto_tags: integer, revision: integer, created_at: text, updated_at: text }),
   task_occurrences: new Table({
     task_id: text, occurrence_key: text, status: text, completed_at: text,
     override_date: text, override_time: text, override_time_zone: text, successor_occurrence_key: text, created_at: text, updated_at: text,

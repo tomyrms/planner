@@ -6,6 +6,9 @@ import {
   occurrenceComplete, occurrenceReopen, occurrenceReschedule, occurrenceSkip, occurrenceSkipMissedBefore, seriesEnd, seriesUpdate,
 } from './series.js';
 import { taskComplete, taskCreate, taskDelete, taskPatch, taskReopen, taskRestore } from './tasks.js';
+import { subtaskAdd, subtaskPatch, subtaskRemove, taskTagAdd, taskTagRemove } from './details.js';
+import { tagCreate, tagPatch, tagDelete, tagRestore } from './tags.js';
+import { settingsPatch } from './settings.js';
 
 /** One handler per V1 command type; the compiler rejects a missing one. */
 export const handlers: Record<CommandType, Handler> = {
@@ -15,6 +18,11 @@ export const handlers: Record<CommandType, Handler> = {
   'task.reopen': taskReopen,
   'task.delete': taskDelete,
   'task.restore': taskRestore,
+  'task.subtask.add': subtaskAdd,
+  'task.subtask.patch': subtaskPatch,
+  'task.subtask.remove': subtaskRemove,
+  'task.tag.add': taskTagAdd,
+  'task.tag.remove': taskTagRemove,
   'occurrence.complete': occurrenceComplete,
   'occurrence.skip': occurrenceSkip,
   'occurrence.reopen': occurrenceReopen,
@@ -30,4 +38,9 @@ export const handlers: Record<CommandType, Handler> = {
   'project.unarchive': projectUnarchive,
   'project.delete': projectDelete,
   'project.restore': projectRestore,
+  'tag.create': tagCreate,
+  'tag.patch': tagPatch,
+  'tag.delete': tagDelete,
+  'tag.restore': tagRestore,
+  'settings.patch': settingsPatch,
 };

@@ -3,7 +3,7 @@ import type { TurnState } from './state.js';
 
 export type RiskReason =
   | 'series_change' | 'several_existing_targets' | 'too_many_creations' | 'too_many_objects'
-  | 'interpreted_selection' | 'notes_replaced' | 'unchosen_slot';
+  | 'interpreted_selection' | 'notes_replaced' | 'unchosen_slot' | 'several_subtask_removals';
 
 const SERIES_TYPES = new Set(['series.update', 'series.end']);
 const MAX_R1_CREATIONS = 10;
@@ -17,9 +17,16 @@ export function evaluateRisk(state: TurnState): { riskClass: 'R1' | 'R2'; reason
   const reasons = new Set<RiskReason>();
   const existing = new Set<string>();
   let creations = 0;
+  const details = new Set<string>();
+  const removedSubtasks = new Set<string>();
   for (const staged of state.plan) {
     const { command, preview } = staged;
     if (SERIES_TYPES.has(command.type)) reasons.add('series_change');
+    if (command.type.startsWith('task.tag.') && state.tasks.get(command.aggregate.id)?.recurring) reasons.add('series_change');
+    for (const [field, change] of Object.entries(preview?.changes ?? {})) {
+      if (field.startsWith('subtask:') || field.startsWith('tag:')) details.add(`${command.aggregate.id}:${field}`);
+      if (field.startsWith('subtask:') && change.before !== null && change.after === null) removedSubtasks.add(`${command.aggregate.id}:${field}`);
+    }
     if (command.type === 'task.create' || command.type === 'project.create') creations++;
     if (staged.existing) {
       existing.add(command.aggregate.id);
@@ -37,5 +44,7 @@ export function evaluateRisk(state: TurnState): { riskClass: 'R1' | 'R2'; reason
   if (existing.size > 1) reasons.add('several_existing_targets');
   if (creations > MAX_R1_CREATIONS) reasons.add('too_many_creations');
   if (existing.size + creations > MAX_R1_OBJECTS) reasons.add('too_many_objects');
+  if (details.size > MAX_R1_OBJECTS) reasons.add('too_many_objects');
+  if (removedSubtasks.size > 1) reasons.add('several_subtask_removals');
   return { riskClass: reasons.size > 0 ? 'R2' : 'R1', reasons: [...reasons] };
 }

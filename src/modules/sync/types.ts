@@ -10,7 +10,9 @@ export type RejectionCode =
   | 'PROJECT_DELETED' | 'REVISION_MISMATCH' | 'DEPENDENCY_REJECTED' | 'REMINDER_BASE_MISSING'
   | 'RECURRING_TASK_DEADLINE_UNSUPPORTED' | 'OCCURRENCE_NOT_IN_SERIES' | 'OCCURRENCE_NOT_CURRENT'
   | 'SUCCESSOR_ALREADY_CHANGED' | 'SERIES_COMMAND_REQUIRED' | 'NOT_A_SERIES' | 'SERIES_ENDED'
-  | 'IDEMPOTENCY_KEY_REUSED' | 'FORBIDDEN_REFERENCE' | 'PAYLOAD_VERSION_UNSUPPORTED';
+  | 'IDEMPOTENCY_KEY_REUSED' | 'FORBIDDEN_REFERENCE' | 'PAYLOAD_VERSION_UNSUPPORTED'
+  | 'SUBTASKS_ON_RECURRING_TASK' | 'SUBTASK_NOT_FOUND' | 'SUBTASK_ALREADY_EXISTS' | 'SUBTASK_LIMIT_REACHED'
+  | 'TAG_DELETED' | 'TAG_NAME_TAKEN' | 'TAG_LIMIT_REACHED' | 'TASK_TAG_LIMIT_REACHED';
 
 export const rejectionMessages: Record<RejectionCode, string> = {
   VALIDATION_FAILED: 'The command payload is not valid.',
@@ -32,6 +34,14 @@ export const rejectionMessages: Record<RejectionCode, string> = {
   IDEMPOTENCY_KEY_REUSED: 'This command identifier was already used for different content.',
   FORBIDDEN_REFERENCE: 'A referenced entity is not available.',
   PAYLOAD_VERSION_UNSUPPORTED: 'This command type or version is not supported.',
+  SUBTASKS_ON_RECURRING_TASK: 'Repeating tasks cannot have subtasks yet.',
+  SUBTASK_NOT_FOUND: 'This subtask does not exist.',
+  SUBTASK_ALREADY_EXISTS: 'A subtask with this identifier already exists.',
+  SUBTASK_LIMIT_REACHED: 'A task can have at most 50 subtasks.',
+  TAG_DELETED: 'The tag was deleted.',
+  TAG_NAME_TAKEN: 'An active tag already uses this name.',
+  TAG_LIMIT_REACHED: 'The tag catalog can have at most 200 active tags.',
+  TASK_TAG_LIMIT_REACHED: 'A task can have at most 10 tags.',
 };
 
 /** Thrown by handlers; the executor rolls back the handler's writes and stores the rejection. */

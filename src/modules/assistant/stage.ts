@@ -2,7 +2,7 @@ import type pg from 'pg';
 import { v5 as uuidv5 } from 'uuid';
 import { executePlan, type CommandActor, type Precondition, type RawCommand, type RejectionCode } from '../sync/index.js';
 import type { TimeValue } from '../time/index.js';
-import { diffSnapshots, snapshotAggregate, type Snapshot } from './snapshot.js';
+import { assistantAggregateType, diffSnapshots, snapshotAggregate, type Snapshot } from './snapshot.js';
 import type { PreviewItem, StagedCommand, TurnState } from './state.js';
 import { recurrenceInput, type ToolArgs, type ToolName } from './tools/catalog.js';
 import { ToolFailure } from './tools/read.js';
@@ -59,13 +59,26 @@ function requireProject(state: TurnState, projectId: string | null | undefined):
   return id;
 }
 
+function requireTag(state: TurnState, tagId: string): string {
+  const id = tagId.toLowerCase();
+  if (!state.tags.has(id)) throw new ToolFailure('UNKNOWN_ID', 'Tag inconnu : lire list_tags ou get_task dans ce tour.');
+  if (state.turn.unsynced.has(id)) throw new UnsyncedTarget();
+  return id;
+}
+
+function requireSubtask(state: TurnState, taskId: string, subtaskId: string): string {
+  const id = subtaskId.toLowerCase();
+  if (state.subtasks.get(id) !== taskId) throw new ToolFailure('UNKNOWN_ID', 'Sous-tâche inconnue pour cette tâche : lire get_task.');
+  return id;
+}
+
 function checkExpectedRevision(observation: { revision: number }, expected: number): void {
   if (observation.revision !== expected) {
     throw new ToolFailure('STALE_REVISION', `expectedRevision doit être la revision lue dans ce tour (${observation.revision}).`);
   }
 }
 
-interface Draft { type: string; aggregate: { type: 'task' | 'project'; id: string }; payload?: Record<string, unknown>; created?: boolean }
+interface Draft { type: string; aggregate: { type: 'task' | 'project'; id: string }; payload?: Record<string, unknown>; created?: boolean; automaticTagIds?: string[] }
 
 async function draftsFor(pool: pg.Pool, state: TurnState, name: ToolName, rawArgs: unknown): Promise<Draft[]> {
   const occurrenceCommand = (type: string, id: string, key: string, extra: Record<string, unknown> = {}): Draft =>
@@ -76,8 +89,18 @@ async function draftsFor(pool: pg.Pool, state: TurnState, name: ToolName, rawArg
       const seed = state.turn.id;
       const id = derivedId(seed, 'task', state.createdTasks);
       const projectId = requireProject(state, args.projectId);
+      if (state.turn.autoTags === true && !state.tagsCatalogueRead) {
+        throw new ToolFailure('TAG_CATALOG_REQUIRED', 'autoTags actif : lire list_tags avant de créer la tâche, même si aucun tag ne paraît pertinent.');
+      }
+      const explicit = (args.tagIds ?? []).map((tagId) => requireTag(state, tagId));
+      const automatic = (args.automaticTagIds ?? []).map((tagId) => requireTag(state, tagId));
+      if (automatic.length > 0 && state.turn.autoTags !== true) throw new ToolFailure('AUTO_TAGS_DISABLED', 'Le classement automatique est désactivé. Ne pas déplacer ces IDs vers tagIds : ce champ exige une demande explicite.');
+      if (automatic.some((tagId) => !state.catalogueTagIds.has(tagId))) throw new ToolFailure('TAG_CATALOG_REQUIRED', 'Les tags automatiques doivent venir de list_tags dans ce tour.');
+      const tagIds = [...new Set([...explicit, ...automatic])];
+      if (tagIds.length > 10) throw new ToolFailure('INVALID_ARGUMENTS', '10 tags au maximum par tâche, explicites et automatiques réunis.');
       return [{
         type: 'task.create', aggregate: { type: 'task', id }, created: true,
+        automaticTagIds: automatic.filter((tagId) => !explicit.includes(tagId)),
         payload: {
           title: args.title,
           ...(args.notes === undefined ? {} : { notes: args.notes }),
@@ -88,12 +111,37 @@ async function draftsFor(pool: pg.Pool, state: TurnState, name: ToolName, rawArg
           ...(args.durationMinutes === undefined ? {} : { durationMinutes: args.durationMinutes }),
           ...(args.recurrence ? { recurrence: withV(args.recurrence) } : {}),
           ...(args.reminder ? { reminders: [{ id: derivedId(seed, 'reminder', state.createdTasks), rule: args.reminder }] } : {}),
+          ...(tagIds.length ? { tagIds } : {}),
+          ...(args.subtasks ? { subtasks: args.subtasks.map((item, index) => ({ ...item, id: derivedId(seed, `task-${state.createdTasks}-subtask`, index) })) } : {}),
         },
       }];
     }
     case 'create_project': {
       const args = rawArgs as ToolArgs<'create_project'>;
       return [{ type: 'project.create', aggregate: { type: 'project', id: derivedId(state.turn.id, 'project', state.createdProjects) }, created: true, payload: { name: args.name } }];
+    }
+    case 'add_subtask': {
+      const args = rawArgs as ToolArgs<'add_subtask'>;
+      const { id } = requireTask(state, args.taskId);
+      return [{ type: 'task.subtask.add', aggregate: { type: 'task', id }, payload: {
+        subtask: { ...args.subtask, id: derivedId(state.turn.id, 'subtask', state.plan.length) },
+      } }];
+    }
+    case 'update_subtask': {
+      const args = rawArgs as ToolArgs<'update_subtask'>;
+      const { id } = requireTask(state, args.taskId);
+      return [{ type: 'task.subtask.patch', aggregate: { type: 'task', id }, payload: { subtaskId: requireSubtask(state, id, args.subtaskId), set: args.set } }];
+    }
+    case 'remove_subtask': {
+      const args = rawArgs as ToolArgs<'remove_subtask'>;
+      const { id } = requireTask(state, args.taskId);
+      return [{ type: 'task.subtask.remove', aggregate: { type: 'task', id }, payload: { subtaskId: requireSubtask(state, id, args.subtaskId) } }];
+    }
+    case 'add_task_tag':
+    case 'remove_task_tag': {
+      const args = rawArgs as ToolArgs<'add_task_tag'>;
+      const { id } = requireTask(state, args.taskId);
+      return [{ type: name === 'add_task_tag' ? 'task.tag.add' : 'task.tag.remove', aggregate: { type: 'task', id }, payload: { tagId: requireTag(state, args.tagId) } }];
     }
     case 'update_task': {
       const args = rawArgs as ToolArgs<'update_task'>;
@@ -213,7 +261,7 @@ export async function previewPlan(pool: pg.Pool, actor: CommandActor, commands: 
         steps.push({
           index,
           commandType: step.command.type,
-          aggregateType: step.command.aggregate.type,
+          aggregateType: assistantAggregateType(step.command.aggregate.type),
           aggregateId: step.command.aggregate.id.toLowerCase(),
           title: after?.title ?? (before as Snapshot)?.title ?? '',
           changes: diffSnapshots(before as Snapshot, after),
@@ -255,7 +303,11 @@ export async function stageMutation(pool: pg.Pool, state: TurnState, name: ToolN
   }
   for (const [offset, draft] of drafts.entries()) {
     const command = added[offset]!;
-    state.plan.push({ command, tool: name, existing: !draft.created, preview: null });
+    const createdInTurn = state.plan.some((item) => item.command.type === 'task.create' && item.command.aggregate.id === draft.aggregate.id);
+    state.plan.push({ command, tool: name, existing: !draft.created && !createdInTurn, preview: null,
+      ...(draft.automaticTagIds?.length ? { automaticTagIds: draft.automaticTagIds } : {}) });
+    for (const item of (draft.payload?.subtasks as Array<{ id: string }> | undefined) ?? []) state.subtasks.set(item.id, draft.aggregate.id);
+    if (draft.type === 'task.subtask.add') state.subtasks.set((draft.payload!.subtask as { id: string }).id, draft.aggregate.id);
     if (draft.created && draft.aggregate.type === 'task') {
       state.observeTask(draft.aggregate.id, { revision: 1, title: String(draft.payload?.title ?? ''), recurring: draft.payload?.recurrence !== undefined }, 'explicit');
       state.createdTasks++;
@@ -265,7 +317,10 @@ export async function stageMutation(pool: pg.Pool, state: TurnState, name: ToolN
       state.createdProjects++;
     }
   }
-  for (const [index, staged] of state.plan.entries()) staged.preview = preview.steps[index] ?? null;
+  for (const [index, staged] of state.plan.entries()) {
+    staged.preview = preview.steps[index] ?? null;
+    if (staged.preview && staged.automaticTagIds) staged.preview.automaticTagIds = staged.automaticTagIds;
+  }
   for (const staged of state.plan.slice(previous.length)) {
     if (staged.command.aggregate.type === 'task') state.referenced.set(staged.command.aggregate.id, staged.preview?.title ?? '');
   }
@@ -278,6 +333,7 @@ export async function stageMutation(pool: pg.Pool, state: TurnState, name: ToolN
       title: step.title,
       changes: Object.keys(step.changes),
       unchanged: step.noop,
+      subtasks: Object.entries(step.changes).filter(([key, change]) => key.startsWith('subtask:') && change.after !== null).map(([key, change]) => ({ subtaskId: key.slice('subtask:'.length), ...change.after as object })),
     })),
   };
 }

@@ -37,7 +37,7 @@ export function recurrenceSummary(rule: RecurrenceRule | null): string | null {
 const TASK_COLUMNS = `t.id, t.title, t.notes, t.status, t.priority, t.project_id, p.name AS list_name,
   t.scheduled_date::text AS scheduled_date, t.scheduled_time::text AS scheduled_time, t.scheduled_time_zone,
   t.deadline_date::text AS deadline_date, t.deadline_time::text AS deadline_time, t.deadline_time_zone,
-  t.duration_minutes, t.recurrence, t.missed_ignored_before::text AS missed_ignored_before,
+  t.duration_minutes, t.recurrence, t.subtasks, t.missed_ignored_before::text AS missed_ignored_before,
   t.deleted_at, t.completed_at, t.revision::int AS revision`;
 
 const scheduleOf = (row: Row): TimeValue | null => toTimeValue({ date: row.scheduled_date, time: row.scheduled_time, zone: row.scheduled_time_zone });
@@ -107,6 +107,13 @@ export async function getTask(pool: pg.Pool, state: TurnState, args: ToolArgs<'g
   if (!row) throw new ToolFailure('NOT_FOUND', 'Aucune tâche avec cet identifiant.');
   const known = state.tasks.get(row.id);
   observe(state, row, known?.selection ?? 'filter');
+  const subtasks = row.subtasks as Array<{ id: string; title: string; isCompleted: boolean; sortOrder: number }>;
+  for (const item of subtasks) state.subtasks.set(item.id, row.id);
+  const tags = (await pool.query<{ id: string; name: string }>(`SELECT t.id, t.name FROM task_tags tt
+    JOIN tags t ON t.id = tt.tag_id AND t.user_id = tt.user_id
+    WHERE tt.task_id = $1 AND tt.user_id = $2 AND tt.deleted_at IS NULL AND t.deleted_at IS NULL
+    ORDER BY t.normalized_name, t.id LIMIT 10`, [row.id, state.turn.userId])).rows;
+  for (const tag of tags) state.tags.set(tag.id, tag.name);
   const reminders = (await pool.query(`SELECT id, occurrence_key, kind, offset_minutes, local_time::text AS local_time,
       absolute_date::text AS absolute_date, absolute_time::text AS absolute_time, absolute_time_zone, state
     FROM reminders WHERE task_id = $1 AND user_id = $2 AND deleted_at IS NULL ORDER BY created_at, id`, [row.id, state.turn.userId])).rows;
@@ -123,6 +130,8 @@ export async function getTask(pool: pg.Pool, state: TurnState, args: ToolArgs<'g
   return {
     ...taskSummary(row),
     notes: row.notes as string | null,
+    subtasks,
+    tags: tags.map((tag) => ({ tagId: tag.id, name: tag.name })),
     recurrenceRule: row.recurrence,
     currentOccurrenceKey,
     missedIgnoredBefore: row.missed_ignored_before,
@@ -146,6 +155,16 @@ export async function listProjects(pool: pg.Pool, state: TurnState) {
     WHERE user_id = $1 AND deleted_at IS NULL ORDER BY sort_order NULLS LAST, name, id`, [state.turn.userId]);
   for (const row of rows) state.projects.add(row.id);
   return { projects: rows.map((row) => ({ projectId: row.id, name: row.name, archived: row.archived })) };
+}
+
+export async function listTags(pool: pg.Pool, state: TurnState) {
+  const { rows } = await pool.query<{ id: string; name: string; revision: number }>(`SELECT id, name, revision::int AS revision
+    FROM tags WHERE user_id = $1 AND deleted_at IS NULL ORDER BY normalized_name, id LIMIT 201`, [state.turn.userId]);
+  if (rows.length > 200) throw new ToolFailure('TOO_MANY_TAGS', 'Le catalogue dépasse la limite de 200 tags.');
+  state.catalogueTagIds.clear();
+  for (const tag of rows) { state.tags.set(tag.id, tag.name); state.catalogueTagIds.add(tag.id); }
+  state.tagsCatalogueRead = true;
+  return { tags: rows.map((tag) => ({ tagId: tag.id, name: tag.name, revision: tag.revision })) };
 }
 
 interface DayItem {

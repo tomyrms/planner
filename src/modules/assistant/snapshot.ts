@@ -6,7 +6,13 @@ import { canonicalJson } from '../sync/index.js';
 export type Snapshot = { title: string; revision: number; fields: Record<string, unknown> } | null;
 export type Changes = Record<string, { before: unknown; after: unknown }>;
 
-export async function snapshotAggregate(client: pg.PoolClient, userId: string, type: 'task' | 'project', id: string): Promise<Snapshot> {
+export function assistantAggregateType(type: string): 'task' | 'project' {
+  if (type !== 'task' && type !== 'project') throw new Error('Unsupported assistant aggregate');
+  return type;
+}
+
+export async function snapshotAggregate(client: pg.PoolClient, userId: string, type: string, id: string): Promise<Snapshot> {
+  assistantAggregateType(type);
   if (type === 'project') {
     const { rows: [row] } = await client.query(`SELECT name, color_key, sort_order, archived_at IS NOT NULL AS archived,
         deleted_at IS NOT NULL AS deleted, revision::int AS revision
@@ -17,7 +23,7 @@ export async function snapshotAggregate(client: pg.PoolClient, userId: string, t
   const { rows: [row] } = await client.query(`SELECT t.title, t.notes, t.priority, t.project_id, p.name AS list_name, t.status,
       t.scheduled_date::text AS scheduled_date, t.scheduled_time::text AS scheduled_time, t.scheduled_time_zone,
       t.deadline_date::text AS deadline_date, t.deadline_time::text AS deadline_time, t.deadline_time_zone,
-      t.duration_minutes, t.recurrence, t.missed_ignored_before::text AS missed_ignored_before,
+      t.duration_minutes, t.recurrence, t.subtasks, t.missed_ignored_before::text AS missed_ignored_before,
       t.deleted_at IS NOT NULL AS deleted, t.revision::int AS revision
     FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = $1 AND t.user_id = $2`, [id, userId]);
   if (!row) return null;
@@ -35,6 +41,14 @@ export async function snapshotAggregate(client: pg.PoolClient, userId: string, t
     missedIgnoredBefore: row.missed_ignored_before,
     deleted: row.deleted,
   };
+  for (const item of row.subtasks as Array<{ id: string; title: string; isCompleted: boolean; sortOrder: number }>) {
+    fields[`subtask:${item.id}`] = item;
+  }
+  const tags = await client.query(`SELECT t.id, t.name FROM task_tags tt
+    JOIN tags t ON t.id = tt.tag_id AND t.user_id = tt.user_id
+    WHERE tt.task_id = $1 AND tt.user_id = $2 AND tt.deleted_at IS NULL AND t.deleted_at IS NULL
+    ORDER BY t.id`, [id, userId]);
+  for (const tag of tags.rows) fields[`tag:${tag.id}`] = { tagId: tag.id, name: tag.name };
   const reminders = await client.query(`SELECT id, occurrence_key, kind, offset_minutes, local_time::text AS local_time,
       absolute_date::text AS absolute_date, absolute_time::text AS absolute_time, absolute_time_zone, state
     FROM reminders WHERE task_id = $1 AND user_id = $2 AND deleted_at IS NULL`, [id, userId]);
@@ -69,6 +83,8 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): Changes {
   for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
     const previous = left[key] ?? null;
     const next = right[key] ?? null;
+    // A catalogue rename is a separate aggregate. Only association presence belongs to this task's diff.
+    if (key.startsWith('tag:') && previous !== null && next !== null) continue;
     if (canonicalJson(previous) !== canonicalJson(next)) changes[key] = { before: previous, after: next };
   }
   return changes;

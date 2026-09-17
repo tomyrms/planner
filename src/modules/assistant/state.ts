@@ -16,6 +16,8 @@ export interface TurnInfo {
   localTime: string;
   unsynced: ReadonlySet<string>;
   calendar: CalendarContext | null;
+  /** Trusted server preference, never chosen by the provider. Missing means disabled. */
+  autoTags?: boolean;
 }
 
 /**
@@ -37,6 +39,7 @@ export interface StagedCommand {
   /** True when the aggregate existed before the turn. */
   existing: boolean;
   preview: PreviewItem | null;
+  automaticTagIds?: string[];
 }
 
 export interface PreviewItem {
@@ -47,6 +50,7 @@ export interface PreviewItem {
   title: string;
   changes: Record<string, { before: unknown; after: unknown }>;
   noop: boolean;
+  automaticTagIds?: string[];
 }
 
 export interface ProposedSlot { date: string; start: string; end: string }
@@ -56,6 +60,11 @@ export class TurnState {
   readonly projects = new Set<string>();
   /** reminderId → taskId, for reminders seen in a read. */
   readonly reminders = new Map<string, string>();
+  readonly tags = new Map<string, string>();
+  readonly catalogueTagIds = new Set<string>();
+  tagsCatalogueRead = false;
+  /** subtaskId → parent taskId, scoped to reads or staged creations in this turn. */
+  readonly subtasks = new Map<string, string>();
   readonly plan: StagedCommand[] = [];
   readonly proposedSlots: ProposedSlot[] = [];
   /** Tasks worth naming in the next turn's context ("ça", "la même"). */

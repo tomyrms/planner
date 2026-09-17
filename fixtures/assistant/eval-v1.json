@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "promptVersion": "assistant-v4",
+  "promptVersion": "assistant-v5",
   "description": "Assistant evaluation set (05_Project/02_Test_Strategy.md). Each case: setup tasks, the user message, provider-independent expectations, and a scripted model run used by the deterministic test. The live runner (npm run eval:assistant) sends the same message to the configured provider and checks only 'expect'. Symbols: $today, $tomorrow, $task:<name> (a setup task id).",
   "referenceInstant": "2026-09-16T18:42:00+02:00",
   "timeZone": "Europe/Zurich",
@@ -58,8 +58,10 @@
         "created": [
           {
             "title": "Réviser chapitre 17",
-            "scheduled_date": "2026-09-18",
-            "scheduled_time": null
+            "scheduled_date": null,
+            "scheduled_time": null,
+            "deadline_date": "2026-09-18",
+            "deadline_time": null
           }
         ]
       },
@@ -70,7 +72,7 @@
               "name": "create_task",
               "arguments": {
                 "title": "Réviser chapitre 17",
-                "schedule": {
+                "deadline": {
                   "date": "2026-09-18"
                 }
               }
@@ -1234,6 +1236,96 @@
         {
           "reply": "C’est fait, j’ai ajouté la tâche."
         }
+      ]
+    },
+    {
+      "id": "auto-tags-match",
+      "category": "tags",
+      "message": "Ajoute la tâche Acheter du lait.",
+      "autoTags": true,
+      "tags": [{ "name": "shopping", "label": "Courses alimentaires" }, { "name": "work", "label": "Travail" }],
+      "expect": {
+        "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1",
+        "created": [{ "tag_names": ["Courses alimentaires"] }],
+        "replyIncludes": ["Tag ajouté automatiquement : Courses alimentaires"]
+      },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Acheter du lait", "automaticTagIds": ["$tag:shopping"] } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "auto-tags-no-match",
+      "category": "tags",
+      "message": "Ajoute la tâche Réviser les équations différentielles.",
+      "autoTags": true,
+      "tags": [{ "name": "garden", "label": "Jardinage" }],
+      "expect": { "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1", "created": [{ "tag_names": [] }] },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Réviser les équations différentielles" } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "auto-tags-empty",
+      "category": "tags",
+      "message": "Ajoute la tâche Acheter du lait.",
+      "autoTags": true,
+      "expect": { "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1", "created": [{ "tag_names": [] }] },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Acheter du lait" } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "auto-tags-ambiguous",
+      "category": "tags",
+      "message": "Ajoute la tâche Appeler Alex.",
+      "autoTags": true,
+      "tags": [{ "name": "work", "label": "Travail" }, { "name": "family", "label": "Famille" }],
+      "expect": { "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1", "created": [{ "tag_names": [] }] },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Appeler Alex" } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "auto-tags-disabled",
+      "category": "tags",
+      "message": "Ajoute la tâche Acheter du lait.",
+      "autoTags": false,
+      "tags": [{ "name": "shopping", "label": "Courses alimentaires" }],
+      "expect": { "tools": ["create_task"], "status": "completed", "riskClass": "R1", "created": [{ "tag_names": [] }] },
+      "script": [
+        { "call": [{ "name": "create_task", "arguments": { "title": "Acheter du lait" } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "checklist-create",
+      "category": "details",
+      "message": "Crée la tâche Préparer le voyage avec deux sous-tâches : Réserver le train et Préparer la valise.",
+      "expect": { "tools": ["create_task"], "status": "completed", "riskClass": "R1", "created": [{ "subtask_count": 2 }], "replyIncludes": ["Sous-tâche ajoutée"] },
+      "script": [
+        { "call": [{ "name": "create_task", "arguments": { "title": "Préparer le voyage", "subtasks": [{ "title": "Réserver le train" }, { "title": "Préparer la valise" }] } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "explicit-tag-disabled",
+      "category": "tags",
+      "message": "Crée la tâche Acheter du lait et ajoute-lui le tag existant Courses alimentaires.",
+      "autoTags": false,
+      "tags": [{ "name": "shopping", "label": "Courses alimentaires" }],
+      "expect": { "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1", "created": [{ "tag_names": ["Courses alimentaires"] }], "replyIncludes": ["Tag ajouté : Courses alimentaires"] },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Acheter du lait", "tagIds": ["$tag:shopping"] } }] },
+        { "reply": "Préparé." }
       ]
     },
     {

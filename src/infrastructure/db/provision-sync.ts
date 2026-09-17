@@ -4,6 +4,7 @@ import type pg from 'pg';
 /** The only tables PowerSync may read (03_Data_Model.md §11). Receipts, auth and tombstones stay private. */
 export const SYNC_TABLES = [
   'projects', 'tasks', 'task_occurrences', 'reminders', 'server_meta',
+  'tags', 'task_tags', 'user_settings',
   'conversations', 'messages', 'assistant_turns', 'assistant_proposals', 'ai_actions',
 ] as const;
 

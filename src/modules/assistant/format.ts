@@ -36,6 +36,31 @@ export function formatRule(rule: ReminderRule, today: string, zone: string): str
 type Reminder = { rule: ReminderRule; occurrenceKey: string | null } | null;
 const quote = (value: unknown) => `« ${String(value)} »`;
 
+function detailLines(item: PreviewItem): string[] {
+  const lines: string[] = [];
+  for (const [field, change] of Object.entries(item.changes)) {
+    if (field.startsWith('tag:')) {
+      const tag = (change.after ?? change.before) as { name: string; automatic?: boolean };
+      const automatic = change.after !== null && (tag.automatic === true || item.automaticTagIds?.includes(field.slice('tag:'.length)));
+      lines.push(`${change.after === null ? 'Tag retiré' : automatic ? 'Tag ajouté automatiquement' : 'Tag ajouté'} : ${tag.name}`);
+    }
+    if (field.startsWith('subtask:')) {
+      const before = change.before as { title: string; isCompleted: boolean; sortOrder: number } | null;
+      const after = change.after as typeof before;
+      if (!after) lines.push(`Sous-tâche retirée : ${before!.title}`);
+      else if (!before) lines.push(`Sous-tâche ajoutée : ${after.title}${after.isCompleted ? ' (cochée)' : ''}`);
+      else {
+        const changes: string[] = [];
+        if (before.title !== after.title) changes.push(`${quote(before.title)} → ${quote(after.title)}`);
+        if (before.isCompleted !== after.isCompleted) changes.push(after.isCompleted ? 'cochée' : 'décochée');
+        if (before.sortOrder !== after.sortOrder) changes.push(`ordre ${before.sortOrder} → ${after.sortOrder}`);
+        lines.push(`Sous-tâche ${after.title} : ${changes.join(', ')}`);
+      }
+    }
+  }
+  return lines;
+}
+
 function reminderLines(item: PreviewItem, today: string, zone: string): string[] {
   const lines: string[] = [];
   for (const [field, change] of Object.entries(item.changes)) {
@@ -67,9 +92,14 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
       const parts = [`Ajouté : ${title}`];
       if (schedule) parts[0] += ` — ${formatTime(schedule, today, zone)}`;
       if (deadline) parts.push(`Échéance : ${formatTime(deadline, today, zone)}`);
-      return [...parts, ...reminderLines(item, today, zone)].join('\n');
+      return [...parts, ...reminderLines(item, today, zone), ...detailLines(item)].join('\n');
     }
     case 'project.create': return `Liste créée : ${title}`;
+    case 'task.tag.add':
+    case 'task.tag.remove':
+    case 'task.subtask.add':
+    case 'task.subtask.patch':
+    case 'task.subtask.remove': return item.noop ? `${title} : rien à changer.` : `${title} — ${detailLines(item).join(', ')}`;
     case 'task.patch': {
       if (item.noop) return `${title} : rien à changer.`;
       const fields = Object.keys(changes).filter((field) => field !== 'listName');
@@ -149,6 +179,13 @@ const unpreparedTexts: Record<string, string> = {
   OCCURRENCE_NOT_IN_SERIES: 'cette occurrence n’existe pas dans la série',
   OCCURRENCE_NOT_CURRENT: 'seule l’occurrence en cours peut être modifiée',
   SERIES_ENDED: 'la série est terminée',
+  AUTO_TAGS_DISABLED: 'le classement automatique est désactivé',
+  TAG_CATALOG_REQUIRED: 'le catalogue des tags doit être lu avant le classement',
+  SUBTASKS_ON_RECURRING_TASK: 'les sous-tâches ne sont pas disponibles sur les séries',
+  SUBTASK_LIMIT_REACHED: 'la tâche contient déjà 50 sous-tâches',
+  SUBTASK_NOT_FOUND: 'la sous-tâche est introuvable',
+  TAG_DELETED: 'le tag a été supprimé du catalogue',
+  TASK_TAG_LIMIT_REACHED: 'la tâche contient déjà 10 tags',
 };
 
 /** User-facing reason for a mutation the model could not prepare (the model saw a technical hint). */
@@ -164,6 +201,7 @@ const reasonTexts: Record<RiskReason, string> = {
   interpreted_selection: 'éléments choisis par interprétation',
   notes_replaced: 'une note existante serait remplacée',
   unchosen_slot: 'créneau non choisi explicitement',
+  several_subtask_removals: 'plusieurs sous-tâches seraient supprimées',
 };
 
 export function proposalText(items: readonly PreviewItem[], reasons: readonly RiskReason[], today: string, zone: string, extra: { criterion?: string | null; unprepared?: readonly string[] } = {}): string {

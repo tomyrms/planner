@@ -7,9 +7,23 @@ export const REQUIRED_TABLES = [
   'command_receipts', 'tombstones', 'server_meta', 'devices', 'auth_sessions', 'auth_refresh_tokens',
   'conversations', 'messages', 'assistant_turns', 'assistant_proposals', 'ai_actions', 'assistant_undos',
   'transcriptions', 'maintenance_runs',
+  'tags', 'task_tags', 'user_settings',
 ] as const;
 /** Dumped too, but short-lived: losing them only cancels a pairing in progress. */
 export const TRANSIENT_TABLES = ['auth_pairing_secrets', 'auth_pair_rate_limits'] as const;
+
+/** A pre-migration backup must require its own schema, not tables introduced by a later release. */
+export const TABLE_INTRODUCED_IN: Record<(typeof REQUIRED_TABLES)[number], string | null> = {
+  planner_migrations: null,
+  users: '0001_domain.sql', projects: '0001_domain.sql', tasks: '0001_domain.sql',
+  task_occurrences: '0001_domain.sql', reminders: '0001_domain.sql', command_receipts: '0001_domain.sql',
+  tombstones: '0001_domain.sql', server_meta: '0001_domain.sql',
+  devices: '0002_auth.sql', auth_sessions: '0002_auth.sql', auth_refresh_tokens: '0002_auth.sql',
+  conversations: '0005_assistant.sql', messages: '0005_assistant.sql', assistant_turns: '0005_assistant.sql',
+  assistant_proposals: '0005_assistant.sql', ai_actions: '0005_assistant.sql', assistant_undos: '0005_assistant.sql',
+  transcriptions: '0006_voice_and_maintenance.sql', maintenance_runs: '0006_voice_and_maintenance.sql',
+  tags: '0007_task_details.sql', task_tags: '0007_task_details.sql', user_settings: '0007_task_details.sql',
+};
 
 export function backupStamp(now: Date): string {
   return now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
@@ -50,13 +64,17 @@ export function dumpsToPrune(fileNames: readonly string[], keepRecent = 7, keepW
 export function tablesWithData(listing: string): Set<string> {
   const tables = new Set<string>();
   for (const line of listing.split(/\r?\n/)) {
-    const match = /\bTABLE DATA \S+ (\S+) /.exec(line);
+    const match = /\bTABLE DATA public (\S+) /.exec(line);
     if (match && !line.trimStart().startsWith(';')) tables.add(match[1]!);
   }
   return tables;
 }
 
-export function missingTables(listing: string): string[] {
+export function missingTables(listing: string, appliedMigrations?: readonly string[]): string[] {
   const present = tablesWithData(listing);
-  return REQUIRED_TABLES.filter((table) => !present.has(table));
+  const required = appliedMigrations === undefined ? REQUIRED_TABLES : REQUIRED_TABLES.filter((table) => {
+    const introduced = TABLE_INTRODUCED_IN[table];
+    return introduced === null || appliedMigrations.includes(introduced);
+  });
+  return required.filter((table) => !present.has(table));
 }

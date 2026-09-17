@@ -11,11 +11,11 @@ import {
 import { ProviderError, type ProviderMessage, type ReasoningProvider, type ToolCall } from './provider.js';
 import { referencesMessage, systemPrompt } from './prompt.js';
 import { evaluateRisk, type RiskReason } from './risk.js';
-import { diffSnapshots, snapshotAggregate, type Changes, type Snapshot } from './snapshot.js';
+import { assistantAggregateType, diffSnapshots, snapshotAggregate, type Changes, type Snapshot } from './snapshot.js';
 import { actorFor, derivedId, PlanTooLarge, stageMutation, UnsyncedTarget } from './stage.js';
 import { TurnState, type CalendarContext, type PreviewItem, type TurnInfo } from './state.js';
 import { CONTROL_TOOLS, isToolName, READ_TOOLS, toolSchemas, toolSpecs, type ToolArgs, type ToolName } from './tools/catalog.js';
-import { findFreeSlots, getTask, listDay, listProjects, listUpcoming, searchTasks, ToolFailure } from './tools/read.js';
+import { findFreeSlots, getTask, listDay, listProjects, listTags, listUpcoming, searchTasks, ToolFailure } from './tools/read.js';
 import { compensationFor, type ActionRow } from './undo.js';
 
 export class AssistantError extends Error {
@@ -126,26 +126,38 @@ async function deleteUnusedTranscriptions(client: pg.PoolClient, userId: string,
 }
 
 /** Snapshot-and-journal hooks shared by turn application, confirmation and Undo. */
-function journalHooks(userId: string) {
+function journalHooks(userId: string, prepared: readonly PreviewItem[] = []) {
   const previews: PreviewItem[] = [];
   return {
     previews,
     hooks: {
-      before: (client: pg.PoolClient, command: RawCommand, index: number) => {
+      before: async (client: pg.PoolClient, command: RawCommand, index: number) => {
         // A deadlock retry replays the whole transaction: start the previews again.
         if (index === 0) previews.length = 0;
+        if (index === 0 && prepared.some((item) => item.automaticTagIds?.length)) {
+          // Hold the setting until this short transaction commits: disabling it cannot race an effect.
+          const setting = await client.query('SELECT auto_tags FROM user_settings WHERE id = $1 FOR SHARE', [userId]);
+          if (setting.rows[0]?.auto_tags !== true) throw new AssistantError('AUTO_TAGS_DISABLED', 422, 'Automatic tagging was disabled; ask again.');
+        }
         return snapshotAggregate(client, userId, command.aggregate.type, command.aggregate.id.toLowerCase());
       },
       after: async (client: pg.PoolClient, step: PlanStep, index: number, before: unknown) => {
         const after = await snapshotAggregate(client, userId, step.command.aggregate.type, step.command.aggregate.id.toLowerCase());
         const result = step.result.outcome === 'duplicate' ? step.result.original : step.result;
+        const changes = diffSnapshots(before as Snapshot, after);
+        const automaticTagIds = prepared[index]?.automaticTagIds ?? [];
+        for (const tagId of automaticTagIds) {
+          const change = changes[`tag:${tagId}`];
+          if (change?.after) change.after = { ...change.after as object, automatic: true };
+        }
         previews.push({
           index,
           commandType: step.command.type,
-          aggregateType: step.command.aggregate.type,
+          aggregateType: assistantAggregateType(step.command.aggregate.type),
           aggregateId: step.command.aggregate.id.toLowerCase(),
           title: after?.title ?? (before as Snapshot)?.title ?? '',
-          changes: diffSnapshots(before as Snapshot, after),
+          changes,
+          ...(automaticTagIds.length ? { automaticTagIds } : {}),
           noop: (result as { noop?: unknown }).noop === true,
         });
       },
@@ -304,16 +316,20 @@ export class AssistantService {
       referenceInstant: new Date(row.reference_instant).toISOString(), timeZone: row.time_zone,
       localDate: instant.toPlainDate().toString(), localTime: timeOf(instant),
       unsynced: new Set<string>(row.unsynced_aggregate_ids ?? []), calendar: row.calendar_context as CalendarContext | null,
+      autoTags: false,
     };
     const state = new TurnState(turn);
-    const messages = await this.contextMessages(state, row);
-    const system = systemPrompt(turn);
+    const messages: ProviderMessage[] = [];
     const turnSignal = AbortSignal.any([entry.abort.signal, AbortSignal.timeout(this.limits.turnMs)]);
     const usage = { rounds: 0, input: 0, output: 0 };
     const toolsUsed: string[] = [];
     let outcome: Outcome | null = null;
     let finalText: string | null = null;
     try {
+      const settings = await this.pool.query('SELECT auto_tags FROM user_settings WHERE id = $1', [row.user_id]);
+      turn.autoTags = settings.rows[0]?.auto_tags === true && !turn.unsynced.has(row.user_id);
+      messages.push(...await this.contextMessages(state, row));
+      const system = systemPrompt(turn);
       while (outcome === null) {
         if (usage.rounds >= this.limits.toolRounds) {
           outcome = { kind: 'failed', code: 'TOOL_ROUNDS_EXCEEDED', text: templates.toolRounds };
@@ -361,7 +377,8 @@ export class AssistantService {
     } catch (error) {
       this.log({ event: 'assistant_turn_error', turnId: turn.id, code: (error as { code?: string }).code ?? 'INTERNAL_ERROR' });
       status = 'failed';
-      await this.finish(state, { status: 'failed', errorCode: 'INTERNAL_ERROR', riskClass: null, usage, message: { kind: 'error', text: templates.providerFailed } });
+      const disabled = error instanceof AssistantError && error.code === 'AUTO_TAGS_DISABLED';
+      await this.finish(state, { status: 'failed', errorCode: disabled ? error.code : 'INTERNAL_ERROR', riskClass: null, usage, message: { kind: 'error', text: disabled ? 'Le classement automatique a été désactivé. Rien n’a été modifié ; tu peux renvoyer la demande.' : templates.providerFailed } });
     }
     this.log({
       event: 'assistant_turn', turnId: turn.id, status, riskClass, rounds: usage.rounds, inputTokens: usage.input,
@@ -443,6 +460,7 @@ export class AssistantService {
       case 'list_day': return listDay(this.pool, state, args as ToolArgs<'list_day'>);
       case 'list_upcoming': return listUpcoming(this.pool, state, args as ToolArgs<'list_upcoming'>);
       case 'list_projects': return listProjects(this.pool, state);
+      case 'list_tags': return listTags(this.pool, state);
       case 'find_free_slots': return findFreeSlots(this.pool, state, args as ToolArgs<'find_free_slots'>);
       default: throw new ToolFailure('NOT_A_READ', `${name} n’est pas une lecture.`);
     }
@@ -503,7 +521,7 @@ export class AssistantService {
     if (!claimed.rowCount) return { riskClass: null, status: 'cancelled' };
     this.emit(entry, { event: 'turn.status', data: { status: 'applying' } });
     const commands = state.plan.map((staged) => staged.command);
-    const journal = journalHooks(state.turn.userId);
+    const journal = journalHooks(state.turn.userId, state.plan.map((item) => item.preview!));
     const outcome = await executePlan(this.pool, actorFor(state), commands, {
       clock: this.clock,
       hooks: {
@@ -639,7 +657,7 @@ export class AssistantService {
     const row = checked.row;
     const zone: string = row.time_zone;
     const today = localDateAt(new Date(row.reference_instant).toISOString(), zone);
-    const journal = journalHooks(identity.userId);
+    const journal = journalHooks(identity.userId, (row.preview?.items ?? []) as PreviewItem[]);
     const actor: CommandActor = { userId: identity.userId, deviceId: identity.deviceId, origin: 'assistant' };
     const outcome = await executePlan(this.pool, actor, row.plan as RawCommand[], {
       clock: this.clock,
@@ -658,6 +676,15 @@ export class AssistantService {
           return { race: false as const, payload };
         },
       },
+    }).catch(async (error: unknown) => {
+      if (error instanceof AssistantError && error.code === 'AUTO_TAGS_DISABLED') {
+        await transaction(this.pool, async (client) => {
+          const locked = await client.query('SELECT * FROM assistant_proposals WHERE id = $1 FOR UPDATE', [id]);
+          if (locked.rows[0]?.state === 'pending') await this.closeProposal(client, { ...locked.rows[0], conversation_id: row.conversation_id }, 'expired', now);
+        });
+        throw new AssistantError('PROPOSAL_STALE', 422, 'Automatic tagging was disabled; ask again.');
+      }
+      throw error;
     });
     if (outcome.status === 'rejected') {
       await transaction(this.pool, async (client) => {

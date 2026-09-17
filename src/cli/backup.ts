@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 import pg from 'pg';
 import { DUMP_PATTERN, backupStamp, dumpsToPrune, missingTables } from '../infrastructure/db/backup-plan.js';
+import { expectedBackupMigrations, parseDumpLedger, validateDumpLedger } from '../infrastructure/db/backup-ledger.js';
 import { migrate } from '../infrastructure/db/migrate.js';
 import { defaultSyncProvisioning, provisionSync } from '../infrastructure/db/provision-sync.js';
 import { rotateGeneration } from '../infrastructure/db/recovery.js';
@@ -63,7 +64,9 @@ async function sha256(path: string): Promise<string> {
 
 async function checkListing(dump: string): Promise<void> {
   const listing = await inContainer(['pg_restore', '--list'], { input: dump });
-  const missing = missingTables(listing);
+  const ledgerSql = await inContainer(['pg_restore', '--data-only', '--schema=public', '--table=planner_migrations', '--file=-'], { input: dump });
+  const applied = validateDumpLedger(parseDumpLedger(ledgerSql), await expectedBackupMigrations());
+  const missing = missingTables(listing, applied);
   if (missing.length > 0) throw new Error(`Dump incomplet, tables sans données : ${missing.join(', ')}`);
 }
 
@@ -145,6 +148,9 @@ async function verify(dump: string): Promise<void> {
         UNION ALL SELECT 'conversations', count(*)::text FROM conversations
         UNION ALL SELECT 'messages', count(*)::text FROM messages
         UNION ALL SELECT 'transcriptions', count(*)::text FROM transcriptions
+        UNION ALL SELECT 'tags', count(*)::text FROM tags
+        UNION ALL SELECT 'task_tags', count(*)::text FROM task_tags
+        UNION ALL SELECT 'user_settings', count(*)::text FROM user_settings
         UNION ALL SELECT 'server_meta', count(*)::text FROM server_meta`);
       const meta = result.rows.find((row) => row.table_name === 'server_meta');
       if (meta?.rows !== '1') throw new Error('server_meta restauré invalide');

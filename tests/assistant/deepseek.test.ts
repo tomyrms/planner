@@ -96,10 +96,10 @@ describe('DeepSeek provider adapter', () => {
 
   it('projects every tool as a closed JSON schema', () => {
     expect(toolSpecs.map((tool) => tool.name)).toEqual([
-      'search_tasks', 'get_task', 'list_day', 'list_upcoming', 'list_projects', 'find_free_slots',
+      'search_tasks', 'get_task', 'list_day', 'list_upcoming', 'list_projects', 'list_tags', 'find_free_slots',
       'create_task', 'update_task', 'complete_task', 'reopen_task', 'delete_task', 'restore_task',
       'skip_occurrence', 'reschedule_occurrence', 'update_series', 'end_series', 'set_reminder', 'remove_reminder',
-      'create_project', 'ask_clarification', 'refuse_request',
+      'create_project', 'add_subtask', 'update_subtask', 'remove_subtask', 'add_task_tag', 'remove_task_tag', 'ask_clarification', 'refuse_request',
     ]);
     for (const tool of toolSpecs) {
       expect(tool.parameters, tool.name).toMatchObject({ type: 'object', additionalProperties: false });

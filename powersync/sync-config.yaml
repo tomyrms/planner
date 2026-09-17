@@ -16,8 +16,17 @@ streams:
         SELECT id, project_id, title, notes, priority, status, completed_at,
                scheduled_date, scheduled_time, scheduled_time_zone, scheduled_start_at, duration_minutes,
                deadline_date, deadline_time, deadline_time_zone, deadline_at,
-               recurrence, missed_ignored_before, search_text, deleted_at, revision, created_at, updated_at
+               recurrence, subtasks, missed_ignored_before, search_text, deleted_at, revision, created_at, updated_at
         FROM tasks WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, name, normalized_name, revision, deleted_at, created_at, updated_at
+        FROM tags WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, task_id, tag_id, deleted_at, created_at, updated_at
+        FROM task_tags WHERE user_id = auth.user_id()
+      - >-
+        SELECT id, auto_tags, revision, created_at, updated_at
+        FROM user_settings WHERE id = auth.user_id()
       - >-
         SELECT id, task_id, occurrence_key, status, completed_at,
                override_date, override_time, override_time_zone, successor_occurrence_key, created_at, updated_at

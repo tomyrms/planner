@@ -16,11 +16,11 @@ Backend du planner iPhone (étapes 1 à 3 de la roadmap et partie serveur de la 
 | `fixtures/sync` | Scénarios de conflit JSON (commandes → résultat attendu), exécutés contre PostgreSQL. |
 | `src/modules/domain` | Dérivés partagés : colonnes temporelles, bases de rappel, texte de recherche normalisé. |
 | `src/modules/assistant` | Tours durables (`/api/v1/assistant/*`, JSON ou SSE), outils du catalogue v1, plan appliqué par l'exécuteur de commandes, politique R0–R3, propositions, Undo groupé, fournisseurs scripté, à règles et DeepSeek. |
-| `fixtures/assistant` | Jeu d'évaluation versionné (24 cas) : test déterministe et évaluation réelle. |
+| `fixtures/assistant` | Jeu d'évaluation versionné (31 cas) : test déterministe et évaluation réelle, dont tags et sous-tâches. |
 | `src/modules/voice` | `/api/v1/assistant/transcriptions` (multipart) : contrôle du conteneur M4A, transcription OpenAI `gpt-transcribe` ou simulée, essais, plafonds, abandon, nettoyage de l'audio. |
 | `src/modules/export` | `GET /api/v1/export` : archive JSON versionnée, instantané cohérent, un export par minute par appareil. |
 | `src/modules/auth` | Appairage depuis la console, rotation des refresh tokens, jeton de sync, déconnexion, JWKS. |
-| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0006). |
+| `migrations` | Schéma PostgreSQL et contraintes du modèle de données (0001 à 0007). |
 | `powersync/` | Configuration du service PowerSync et Sync Streams (lecture seule, filtrée par utilisateur). |
 | `src/infrastructure/db` | Runner de migrations, provisionnement PowerSync, règles de sauvegarde, rotation de génération. |
 
@@ -28,7 +28,9 @@ L'app iPhone contient maintenant les écrans de tâches, l'agenda et le calendri
 
 `GET /api/v1/diagnostics` est authentifié et expose uniquement l'état technique et les compteurs. La corbeille est purgée après 30 jours, une fois par jour ; le journal IA reste tant que la tâche ou sa conversation existe. **Reçus et tombstones restent conservés** tant que la récupération des files hors ligne de plus de 90 jours n'est pas implémentée : les effacer maintenant permettrait de rejouer d'anciennes commandes.
 
-Restent notamment l'import d'un export, la récupération guidée de la file et les validations sur l'iPhone. Les 24 cas DeepSeek ont été réussis au moins une fois lors des évaluations du 16 septembre ; cela ne constitue pas une garantie sur toutes les demandes réelles.
+La récupération guidée conserve une archive vérifiée et la file existante avant de changer de serveur, d'identité ou de génération. L'import sélectif d'un export et la validation complète sur iPhone restent à faire.
+
+Les tâches disposent d'une description, d'une checklist à un niveau (hors récurrence) et de tags réutilisables. Dans Réglages > Assistant, le classement automatique peut être activé pour les nouvelles tâches créées par l'assistant : jusqu'à trois tags existants pertinents, aucun si la correspondance est incertaine. Le réglage est désactivé par défaut ; les résultats indiquent les ajouts et restent annulables. Les nouvelles tables sont incluses dans la réplication et les sauvegardes ; les anciens dumps sont contrôlés selon leurs migrations puis mis à niveau lors de leur restauration.
 
 Depuis Réglages > Données, l'iPhone peut exporter sa copie locale en JSON, même hors ligne : tâches, listes, occurrences, rappels, conversations, textes en cours, commandes non acquittées et rejets. L'archive précise si la première synchronisation est incomplète ; elle ne remplace pas une sauvegarde complète du serveur. Aucun audio ni identifiant d'accès n'est inclus, et l'export ne modifie pas la file.
 
