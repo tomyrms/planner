@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { decodeJwt, jwtVerify, importSPKI, importPKCS8, SignJWT } from 'jose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { AuthService, registerAuthRoutes, type AuthConfig, type TokenResponse } from '../../src/modules/auth/index.js';
+import { AuthService, authSchemas, registerAuthRoutes, type AuthConfig, type TokenResponse, type SyncTokenResponse } from '../../src/modules/auth/index.js';
 import { registerErrorHandler } from '../../src/errors.js';
 import { createTestDatabase } from '../db/helpers.js';
 
@@ -70,6 +70,48 @@ describe('PostgreSQL authentication lifecycle', () => {
     const secret = await service.createPairingSecret({ name: 'iPhone' });
     const responses = await Promise.all(Array.from({ length: 4 }, () => app.inject({ method: 'POST', url: '/api/v1/auth/pair/complete', remoteAddress: ip(), payload: { pairingSecret: secret.pairingSecret, device } })));
     expect(responses.map(r => r.statusCode).sort()).toEqual([201, 401, 401, 401]);
+  });
+
+  it('returns the same authenticated user identity across pairing, refresh and sync credentials', async () => {
+    const original = await pair();
+    const owner = (await db.pool.query<{ user_id: string }>('SELECT user_id FROM devices WHERE id=$1', [original.deviceId])).rows[0]!.user_id;
+    expect(authSchemas.tokens.parse(original).userId).toBe(owner);
+    expect(decodeJwt(original.accessToken).sub).toBe(owner);
+
+    const rotated = await refresh(original.refreshToken);
+    expect(rotated.statusCode).toBe(200);
+    expect(rotated.headers['cache-control']).toBe('no-store');
+    const replacement = authSchemas.tokens.parse(rotated.json());
+    expect(replacement).toMatchObject({ userId: owner, deviceId: original.deviceId, serverGeneration: original.serverGeneration });
+    expect(decodeJwt(replacement.accessToken).sub).toBe(owner);
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(replacement) });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    const sync = authSchemas.sync.parse(response.json());
+    expect(sync).toMatchObject({ userId: owner, serverGeneration: original.serverGeneration });
+    expect(decodeJwt(sync.token).sub).toBe(owner);
+  });
+
+  it('reports a changed database generation before sync with the still-valid access token', async () => {
+    const original = await pair();
+    const before = await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(original) });
+    expect(before.statusCode).toBe(200);
+    expect(before.json<SyncTokenResponse>().serverGeneration).toBe(original.serverGeneration);
+
+    const restoredGeneration = randomUUID();
+    try {
+      await db.pool.query('UPDATE server_meta SET generation=$1 WHERE singleton=true', [restoredGeneration]);
+      const after = await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(original) });
+      expect(after.statusCode).toBe(200);
+      expect(authSchemas.sync.parse(after.json())).toMatchObject({ userId: original.userId, serverGeneration: restoredGeneration });
+
+      const refreshed = await refresh(original.refreshToken);
+      expect(refreshed.statusCode).toBe(200);
+      expect(authSchemas.tokens.parse(refreshed.json())).toMatchObject({ userId: original.userId, serverGeneration: restoredGeneration });
+    } finally {
+      await db.pool.query('UPDATE server_meta SET generation=$1 WHERE singleton=true', [original.serverGeneration]);
+    }
   });
 
   it('rejects pairing at ten minutes and locks it after five incorrect proofs', async () => {
@@ -149,7 +191,7 @@ describe('PostgreSQL authentication lifecycle', () => {
     const original = await pair();
     const result = await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(original) });
     expect(result.statusCode).toBe(200);
-    const sync = result.json<{ token: string; expiresAt: string; endpoint: string }>();
+    const sync = result.json<SyncTokenResponse>();
     // The iPhone learns the sync address from the server, never from its own build.
     expect(sync.endpoint).toBe('https://sync.planner.test');
     const verified = await jwtVerify(sync.token, await importSPKI(config.publicKeyPem, 'RS256'), { issuer: config.issuer, audience: config.syncAudience, currentDate: now });
@@ -178,6 +220,7 @@ describe('PostgreSQL authentication lifecycle', () => {
     const second = await pair();
     expect(await service.revokeDevice(second.deviceId)).toBe(true);
     expect((await refresh(second.refreshToken)).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/sync-token', headers: bearer(second) })).statusCode).toBe(401);
   });
 
   it('forbids user/device ownership fields from the client', async () => {

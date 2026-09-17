@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { exportJWK, importPKCS8, importSPKI, jwtVerify, SignJWT } from 'jose';
 import type { Pool, PoolClient } from 'pg';
-import type { PairInput, TokenResponse } from './schemas.js';
+import type { PairInput, TokenResponse, SyncTokenResponse } from './schemas.js';
 
 const ACCESS_SECONDS = 15 * 60;
 const REFRESH_MS = 60 * 24 * 60 * 60 * 1000;
@@ -192,15 +192,21 @@ export class AuthService {
       .setJti(id).setIssuedAt(iat).setExpirationTime(iat + ACCESS_SECONDS).sign(await this.privateKey());
   }
 
-  private async tokenResponse(client: PoolClient, identity: AuthIdentity, refresh: RefreshRow): Promise<TokenResponse> {
+  private async serverGeneration(client: Pool | PoolClient): Promise<string> {
     const generation = await client.query<{ generation: string }>('SELECT generation FROM server_meta WHERE singleton = true');
     if (!generation.rows[0]) throw new Error('Server generation is missing. Apply migrations first.');
+    return generation.rows[0].generation;
+  }
+
+  private async tokenResponse(client: PoolClient, identity: AuthIdentity, refresh: RefreshRow): Promise<TokenResponse> {
+    const serverGeneration = await this.serverGeneration(client);
     return {
+      userId: identity.userId,
       deviceId: identity.deviceId,
       accessToken: await this.sign(identity, refresh.id, refresh.issued_at, this.config.apiAudience, 'access'),
       accessTokenExpiresAt: new Date(refresh.issued_at.getTime() + ACCESS_SECONDS * 1000).toISOString(),
       refreshToken: this.refreshValue(refresh.id),
-      serverGeneration: generation.rows[0].generation,
+      serverGeneration,
     };
   }
 
@@ -222,12 +228,16 @@ export class AuthService {
     return identity;
   }
 
-  async syncToken(identity: AuthIdentity): Promise<{ token: string; expiresAt: string; endpoint: string | null }> {
+  async syncToken(identity: AuthIdentity): Promise<SyncTokenResponse> {
+    // Read the current generation before every sync connection, even with an unexpired access token.
+    const serverGeneration = await this.serverGeneration(this.pool);
     const now = new Date(Math.floor(this.now().getTime() / 1000) * 1000);
     return {
       token: await this.sign(identity, randomUUID(), now, this.config.syncAudience, 'sync'),
       expiresAt: new Date(now.getTime() + ACCESS_SECONDS * 1000).toISOString(),
       endpoint: this.config.syncEndpoint ?? null,
+      userId: identity.userId,
+      serverGeneration,
     };
   }
 

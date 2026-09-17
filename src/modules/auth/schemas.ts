@@ -11,19 +11,27 @@ export const authSchemas = {
   pair: z.strictObject({ pairingSecret: z.string().min(1).max(200), device }),
   refresh: z.strictObject({ refreshToken: z.string().min(1).max(200) }),
   tokens: z.strictObject({
+    userId: z.uuid(),
     deviceId: z.uuid(),
     accessToken: z.string(),
     accessTokenExpiresAt: z.iso.datetime(),
     refreshToken: z.string(),
     serverGeneration: z.uuid(),
   }),
-  sync: z.strictObject({ token: z.string(), expiresAt: z.iso.datetime(), endpoint: z.url().nullable() }),
+  sync: z.strictObject({
+    token: z.string(),
+    expiresAt: z.iso.datetime(),
+    endpoint: z.url().nullable(),
+    userId: z.uuid(),
+    serverGeneration: z.uuid(),
+  }),
   logout: z.strictObject({ revoked: z.literal(true) }),
   error: z.strictObject({ error: z.strictObject({ code: z.string(), message: z.string(), requestId: z.string() }) }),
 };
 
 export type PairInput = z.infer<typeof authSchemas.pair>;
 export type TokenResponse = z.infer<typeof authSchemas.tokens>;
+export type SyncTokenResponse = z.infer<typeof authSchemas.sync>;
 
 const json = (schema: z.ZodType) => z.toJSONSchema(schema, { target: 'draft-7' });
 const errors = { 400: json(authSchemas.error), 401: json(authSchemas.error), 429: json(authSchemas.error) };
