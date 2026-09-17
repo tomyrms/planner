@@ -14,6 +14,7 @@ import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/infrastructure/db/pool.js';
 import { AuthService } from '../src/modules/auth/index.js';
 import { executeCommand, type RawCommand } from '../src/modules/sync/index.js';
+import { taskTagId } from '../src/modules/domain/details.js';
 
 const API_URL = process.env.SMOKE_BASE_URL ?? 'http://127.0.0.1:4317';
 const POWERSYNC_URL = process.env.POWERSYNC_URL ?? 'http://127.0.0.1:4318';
@@ -156,7 +157,7 @@ class SpikeConnector implements PowerSyncBackendConnector {
 function newCommand(type: string, aggregateId: string, payload: Record<string, unknown>, extra: Partial<RawCommand> = {}): RawCommand {
   return {
     clientCommandId: randomUUID(), type, payloadVersion: 1,
-    aggregate: { type: type.startsWith('project.') ? 'project' : 'task', id: aggregateId },
+    aggregate: { type: type.startsWith('project.') ? 'project' : type.startsWith('tag.') ? 'tag' : type.startsWith('settings.') ? 'settings' : 'task', id: aggregateId },
     clientRecordedAt: new Date().toISOString(), payload, ...extra,
   };
 }
@@ -181,6 +182,7 @@ const directory = mkdtempSync(join(tmpdir(), 'planner-spike-'));
 let db: AbstractPowerSyncDatabase | undefined;
 let deviceId: string | undefined;
 let originalGeneration: string | undefined;
+let detailFixture: { userId: string; taskId: string; tagId: string } | undefined;
 const started = Date.now();
 
 try {
@@ -230,6 +232,64 @@ try {
   });
   check('5', 'mutation serveur répliquée sans ré-upload', patched.revision === 2 && connector.posts === postsBefore && !(await pending()),
     `création visible en ${replicationMs} ms, révision ${patched.revision}, envois ${connector.posts - postsBefore}`);
+
+  // ADR-033: prove actual rows from all three new tables and the task JSON reach this disposable SQLite.
+  // The server owner is the existing paired user. Only labeled fixtures are changed; settings retain
+  // their exact current value, guarded by revision so a concurrent user choice can never be overwritten.
+  const detailTaskId = randomUUID();
+  const detailTagId = randomUUID();
+  const subtaskId = randomUUID();
+  detailFixture = { userId, taskId: detailTaskId, tagId: detailTagId };
+  const manual = { userId, deviceId: null, origin: 'manual' as const };
+  const requireApplied = async (input: RawCommand) => {
+    const result = await executeCommand(apiPool, manual, input);
+    if (result.outcome !== 'applied') throw new Error(`Fixture ${input.type} was not applied (${result.outcome}).`);
+    return result;
+  };
+  await requireApplied(newCommand('tag.create', detailTagId, { name: `[spike] tag ${detailTagId.slice(0, 8)}` }));
+  await requireApplied(newCommand('task.create', detailTaskId, {
+    title: '[spike] détails synchronisés', tagIds: [detailTagId], subtasks: [{ id: subtaskId, title: '[spike] étape' }],
+  }));
+  const detailStarted = Date.now();
+  await waitFor('tags and checklist replicated', async () => {
+    const task = await localDb.getOptional<{ subtasks: string }>('SELECT subtasks FROM tasks WHERE id = ?', [detailTaskId]);
+    const tag = await localDb.getOptional<{ id: string; deleted_at: string | null }>('SELECT id, deleted_at FROM tags WHERE id = ?', [detailTagId]);
+    const relation = await localDb.getOptional<{ id: string; task_id: string; tag_id: string; deleted_at: string | null }>(
+      'SELECT id, task_id, tag_id, deleted_at FROM task_tags WHERE id = ?', [taskTagId(detailTaskId, detailTagId)]);
+    const subtasks = task?.subtasks ? JSON.parse(task.subtasks) as Array<{ id: string; isCompleted: boolean }> : [];
+    return tag?.id === detailTagId && tag.deleted_at === null && relation?.task_id === detailTaskId
+      && relation.tag_id === detailTagId && relation.deleted_at === null && subtasks.length === 1
+      && subtasks[0]?.id === subtaskId && subtasks[0].isCompleted === false;
+  });
+  check('détails', 'tags, task_tags et checklist réellement répliqués', true, `${Date.now() - detailStarted} ms`);
+  const { rows: [existingSettings] } = await apiPool.query<{ auto_tags: boolean; revision: string }>(
+    'SELECT auto_tags, revision::text FROM user_settings WHERE id = $1', [userId]);
+  const expectedAutoTags = existingSettings?.auto_tags ?? false;
+  const expectedSettingsRevision = Number(existingSettings?.revision ?? 1);
+  await requireApplied(newCommand('settings.patch', userId, { set: { autoTags: expectedAutoTags } }, {
+    precondition: { kind: 'revision', revision: expectedSettingsRevision },
+  }));
+  await waitFor('settings replicated without changing preference', async () => {
+    const value = await localDb.getOptional<{ auto_tags: number; revision: number }>(
+      'SELECT auto_tags, revision FROM user_settings WHERE id = ?', [userId]);
+    return value?.auto_tags === Number(expectedAutoTags) && value.revision === expectedSettingsRevision;
+  });
+  check('détails', 'user_settings réellement répliqué, préférence conservée', true);
+  await requireApplied(newCommand('tag.delete', detailTagId, {}));
+  await waitFor('deleted tag retained with its relation', async () => {
+    const tag = await localDb.getOptional<{ deleted_at: string | null }>('SELECT deleted_at FROM tags WHERE id = ?', [detailTagId]);
+    const relation = await localDb.getOptional<{ deleted_at: string | null }>('SELECT deleted_at FROM task_tags WHERE id = ?', [taskTagId(detailTaskId, detailTagId)]);
+    return tag?.deleted_at != null && relation?.deleted_at === null;
+  });
+  await requireApplied(newCommand('task.tag.remove', detailTaskId, { tagId: detailTagId }));
+  await requireApplied(newCommand('task.delete', detailTaskId, {}));
+  await waitFor('detail fixture cleanup replicated', async () => {
+    const relation = await localDb.getOptional<{ deleted_at: string | null }>('SELECT deleted_at FROM task_tags WHERE id = ?', [taskTagId(detailTaskId, detailTagId)]);
+    const task = await localTask(detailTaskId);
+    return relation?.deleted_at != null && task?.deleted_at != null;
+  });
+  check('détails', 'suppression du tag, du lien et de la tâche répliquée sans perte des lignes', true);
+  detailFixture = undefined;
 
   // Local flow: optimistic projection, upload, server state replaces the projection.
   const localTaskId = randomUUID();
@@ -324,6 +384,14 @@ try {
 } catch (error) {
   check('spike', 'exécution', false, error instanceof Error ? error.message : 'erreur inconnue');
 } finally {
+  if (detailFixture) {
+    const { userId, taskId, tagId } = detailFixture;
+    const actor = { userId, deviceId: null, origin: 'manual' as const };
+    // Only IDs freshly generated by this run; cleanup remains safe if the test stopped halfway.
+    for (const input of [newCommand('task.tag.remove', taskId, { tagId }), newCommand('task.delete', taskId, {}), newCommand('tag.delete', tagId, {})]) {
+      await executeCommand(apiPool, actor, input).catch(() => undefined);
+    }
+  }
   await db?.disconnectAndClear().catch(() => undefined);
   await db?.close().catch(() => undefined);
   if (deviceId) await auth.revokeDevice(deviceId).catch(() => undefined);
