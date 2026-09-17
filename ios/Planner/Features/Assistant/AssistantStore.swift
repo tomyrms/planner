@@ -72,7 +72,7 @@ final class AssistantStore {
     private var messages: [ThreadMessage] = []
     private var turns: [String: TurnControls] = [:]
     private var snapshots: [String: TurnSnapshot] = [:]
-    private var observation: Task<Void, Never>?
+    @ObservationIgnored private var observations: [Task<Void, Never>] = []
 
     private enum Keys {
         static let draft = "assistant.draft"
@@ -107,34 +107,30 @@ final class AssistantStore {
     // MARK: - Observation
 
     func start() {
-        guard observation == nil else { return }
+        guard observations.isEmpty else { return }
         let repository = self.repository
         let conversationId = self.conversationId
-        observation = Task { [weak self] in
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { @MainActor [weak self] in
-                    do {
-                        for try await rows in try repository.observeMessages(conversationId: conversationId) {
-                            self?.messages = rows
-                            self?.rebuild()
-                        }
-                    } catch {}
+        observations.append(Task { [weak self] in
+            do {
+                for try await rows in try repository.observeMessages(conversationId: conversationId) {
+                    self?.messages = rows
+                    self?.rebuild()
                 }
-                group.addTask { @MainActor [weak self] in
-                    do {
-                        for try await rows in try repository.observeTurns(conversationId: conversationId) {
-                            self?.turns = Dictionary(rows.map { ($0.turnId, $0) }, uniquingKeysWith: { first, _ in first })
-                            self?.rebuild()
-                        }
-                    } catch {}
+            } catch {}
+        })
+        observations.append(Task { [weak self] in
+            do {
+                for try await rows in try repository.observeTurns(conversationId: conversationId) {
+                    self?.turns = Dictionary(rows.map { ($0.turnId, $0) }, uniquingKeysWith: { first, _ in first })
+                    self?.rebuild()
                 }
-            }
-        }
+            } catch {}
+        })
     }
 
     func stop() {
-        observation?.cancel()
-        observation = nil
+        for observation in observations { observation.cancel() }
+        observations.removeAll()
     }
 
     func open(conversation id: String) {
