@@ -84,8 +84,9 @@ struct VoiceMessageStoreTests {
 
         await store.appDidBecomeActive()
 
+        let expectedHandoff = try #require(saved.handoff)
         #expect(assistant.prepareCount == 0)
-        #expect(assistant.accepted == [try #require(saved.handoff)])
+        #expect(assistant.accepted == [expectedHandoff])
         #expect(await api.calls.isEmpty)
         #expect(store.draft == nil)
     }
