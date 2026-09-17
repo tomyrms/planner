@@ -192,9 +192,9 @@ nonisolated enum Outbox {
         case .never:
             break
         case .afterPendingCommand:
-            if let previous = try lastPendingCommand(for: command.aggregateId, in: tx) { precondition = .afterCommand(previous) }
+            if let previous = try lastPendingCommand(for: command.aggregateId, aggregateType: command.aggregateType, in: tx) { precondition = .afterCommand(previous) }
         case .required(let revision):
-            precondition = try lastPendingCommand(for: command.aggregateId, in: tx).map(Precondition.afterCommand) ?? .revision(revision)
+            precondition = try lastPendingCommand(for: command.aggregateId, aggregateType: command.aggregateType, in: tx).map(Precondition.afterCommand) ?? .revision(revision)
         }
         try tx.execute(
             sql: """
@@ -210,16 +210,16 @@ nonisolated enum Outbox {
     }
 
     /// The queue entry of an insert-only table is only visible in `ps_crud`.
-    static func lastPendingCommand(for aggregateId: String, in tx: any Transaction) throws -> String? {
+    static func lastPendingCommand(for aggregateId: String, aggregateType: String, in tx: any Transaction) throws -> String? {
         try tx.getOptional(
             sql: """
             SELECT json_extract(data, '$.id') FROM ps_crud
             WHERE json_extract(data, '$.type') = 'outbox' AND (
-              json_extract(data, '$.data.aggregate_id') = ? OR
-              json_extract(data, '$.id') = (SELECT value FROM local_meta WHERE id = ?))
+              (json_extract(data, '$.data.aggregate_id') = ? AND json_extract(data, '$.data.aggregate_type') = ?) OR
+              (? = 'task' AND json_extract(data, '$.id') = (SELECT value FROM local_meta WHERE id = ?)))
             ORDER BY id DESC LIMIT 1
             """,
-            parameters: [aggregateId, "task_project_dependency:" + aggregateId]
+            parameters: [aggregateId, aggregateType, aggregateType, "task_project_dependency:" + aggregateId]
         ) { cursor in try cursor.getString(index: 0) }
     }
 

@@ -91,6 +91,18 @@ struct ProjectManagementTests {
         #expect(multi.map(\.id) == [c.id, a.id, b.id])
     }
 
+    @Test func sameUUIDInAnotherAggregateDoesNotCreateATaskRevisionDependency() async throws {
+        try await withDatabase { db in
+            let repository = TaskRepository(db: db)
+            let id = try await repository.createProject(name: "Liste")
+            try await db.execute(sql: "INSERT INTO tasks (id, title, status, priority, revision) VALUES (?, 'Tâche indépendante', 'active', 'none', 1)", parameters: [id])
+            try await repository.setCompleted(id, true)
+            let queue = try await commands(db)
+            #expect(queue.count == 2)
+            #expect(queue[1]["precondition"] == nil)
+        }
+    }
+
     private func commands(_ db: any PowerSyncDatabaseProtocol) async throws -> [[String: JSONPayload]] {
         let archive = try await LocalExportRepository(db: db).archive(context: LocalExportContext(hasSynced: true, connection: "offline"))
         return try archive.pendingCommands.map {

@@ -33,9 +33,9 @@ nonisolated struct TaskRepository: Sendable {
             """,
             parameters: []
         ) { cursor in
-            ProjectItem(id: try cursor.getString(name: "id"), name: cursor.getStringOptional(name: "name") ?? "",
-                        activeTaskCount: try cursor.getInt(name: "active_count"), revision: cursor.getIntOptional(name: "revision") ?? 0,
-                        deletedAt: Timestamp.parse(cursor.getStringOptional(name: "deleted_at")))
+            ProjectItem(id: try cursor.getString(name: "id"), name: try cursor.getStringOptional(name: "name") ?? "",
+                        activeTaskCount: try cursor.getInt(name: "active_count"), revision: try cursor.getIntOptional(name: "revision") ?? 0,
+                        deletedAt: Timestamp.parse(try cursor.getStringOptional(name: "deleted_at")))
         }
     }
 
