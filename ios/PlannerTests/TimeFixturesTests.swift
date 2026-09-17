@@ -14,15 +14,23 @@ struct TimeFixturesTests {
         return try #require(object["cases"] as? [[String: Any]])
     }
 
-    static let v1 = (try? cases("v1.json")) ?? []
-
-    @Test func fixturesAreLoaded() {
-        #expect(Self.v1.count >= 48)
+    static func ids(_ file: String) -> [String] {
+        ((try? cases(file)) ?? []).compactMap { $0["id"] as? String }
     }
 
-    @Test(arguments: TimeFixturesTests.v1.map { $0["id"] as? String ?? "?" })
+    static func fixture(_ file: String, id: String) throws -> [String: Any] {
+        try #require(try cases(file).first { $0["id"] as? String == id })
+    }
+
+    static let v1Ids = ids("v1.json")
+
+    @Test func fixturesAreLoaded() {
+        #expect(Self.v1Ids.count >= 48)
+    }
+
+    @Test(arguments: TimeFixturesTests.v1Ids)
     func sharedCase(_ id: String) throws {
-        let fixture = try #require(Self.v1.first { $0["id"] as? String == id })
+        let fixture = try Self.fixture("v1.json", id: id)
         let operation = try #require(fixture["operation"] as? String)
         let input = fixture["input"]
         let expected = fixture["expected"]
@@ -182,11 +190,11 @@ struct TimeFixturesTests {
 
 /// `reminder-plans-v1.json`: windows, capacity and proofs of scheduling.
 struct ReminderPlanFixturesTests {
-    static let cases = (try? TimeFixturesTests.cases("reminder-plans-v1.json")) ?? []
+    static let planIds = TimeFixturesTests.ids("reminder-plans-v1.json")
 
-    @Test(arguments: ReminderPlanFixturesTests.cases.map { $0["id"] as? String ?? "?" })
+    @Test(arguments: ReminderPlanFixturesTests.planIds)
     func plan(_ id: String) throws {
-        let fixture = try #require(Self.cases.first { $0["id"] as? String == id })
+        let fixture = try TimeFixturesTests.fixture("reminder-plans-v1.json", id: id)
         let now = try #require(InstantText.parse(fixture["referenceInstant"] as? String ?? ""))
         let zone = try #require(TimeZone(identifier: fixture["deviceTimeZone"] as? String ?? ""))
         let trigger = try #require(InstantText.parse(fixture["triggerAt"] as? String ?? ""))
