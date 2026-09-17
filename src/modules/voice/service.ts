@@ -132,7 +132,11 @@ export class VoiceService {
       try {
         inspectM4a(await readFile(upload.path), upload.durationMs);
       } catch (error) {
-        if (error instanceof AudioRejected) throw new AssistantError(error.code, 422, error.message);
+        if (error instanceof AudioRejected) {
+          // Parser reasons are fixed technical strings, with no file bytes, path or user text.
+          this.log({ event: 'audio_rejected', code: error.code, reason: error.message });
+          throw new AssistantError(error.code, 422, error.message);
+        }
         throw error;
       }
       const now = this.clock();

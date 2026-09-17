@@ -95,7 +95,10 @@ final class VoiceMessageStore {
         default:
             break
         }
-        guard !stopped, recordingConversation != nil, !Task.isCancelled else { return }
+        guard !stopped, recordingConversation != nil, !Task.isCancelled else {
+            cancelRecording()
+            return
+        }
         phase = .recording
         do {
             try recorder.start(into: audioDirectory.appending(path: "\(UUID().uuidString.lowercased()).m4a"))
@@ -134,7 +137,16 @@ final class VoiceMessageStore {
     }
 
     private func handle(_ outcome: VoiceRecorder.Outcome) {
-        guard !stopped, let conversation = recordingConversation else { return }
+        guard !stopped, let conversation = recordingConversation else {
+            // Cancel/logout can win while AVURLAsset is measuring an already-finalized recording.
+            switch outcome {
+            case .finished(let url, _), .interrupted(let url, _):
+                try? FileManager.default.removeItem(at: url)
+            default:
+                break
+            }
+            return
+        }
         recordingConversation = nil
         phase = .idle
         switch outcome {

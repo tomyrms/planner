@@ -62,6 +62,7 @@ final class AppModel {
         await services.stop()
         try await services.db.disconnectAndClear()
         try credentials.delete()
+        services.assistant.clearPairingState()
         phase = .unpaired
     }
 

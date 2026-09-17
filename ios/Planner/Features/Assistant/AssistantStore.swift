@@ -83,6 +83,8 @@ final class AssistantStore: VoiceAssistant {
     private var snapshots: [String: TurnSnapshot] = [:]
     @ObservationIgnored private var observations: [Task<Void, Never>] = []
     @ObservationIgnored private var voiceSubmission: Task<Void, Never>?
+    @ObservationIgnored private var expiredTranscriptSubmission: Task<Void, Never>?
+    @ObservationIgnored private var requestsStopped = false
     /// Called when a turn changed something: reminders are reconciled at once, then again after replication.
     @ObservationIgnored var onResult: (() -> Void)?
 
@@ -109,10 +111,10 @@ final class AssistantStore: VoiceAssistant {
     }
 
     var canSend: Bool {
-        !isBusy && pending == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !requestsStopped && !isBusy && pending == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var canAcceptVoice: Bool { !isBusy && pending == nil && revising == nil }
+    var canAcceptVoice: Bool { !requestsStopped && !isBusy && pending == nil && revising == nil }
 
     var isEmptyConversation: Bool {
         entries.isEmpty && pending == nil
@@ -149,12 +151,32 @@ final class AssistantStore: VoiceAssistant {
 
     /// Called when the paired services are stopped, not when merely changing conversation.
     func stopRequests() {
+        requestsStopped = true
         voiceSubmission?.cancel()
         voiceSubmission = nil
+        expiredTranscriptSubmission?.cancel()
+        expiredTranscriptSubmission = nil
+    }
+
+    /// Only after the database and Keychain pairing have both been removed successfully.
+    /// A plain service stop keeps the pending request recoverable for the same pairing.
+    func clearPairingState() {
+        stopRequests()
+        stop()
+        pending = nil
+        draft = ""
+        revising = nil
+        messages = []
+        turns = [:]
+        snapshots = [:]
+        conversationId = UUID().uuidString.lowercased()
+        phase = .idle
+        for key in [Keys.pending, Keys.draft, Keys.conversation] { defaults.removeObject(forKey: key) }
+        rebuild()
     }
 
     func open(conversation id: String) {
-        guard pending == nil, !isBusy else {
+        guard !requestsStopped, pending == nil, !isBusy else {
             notice = "Une demande attend encore son résultat dans la conversation actuelle."
             return
         }
@@ -180,7 +202,7 @@ final class AssistantStore: VoiceAssistant {
         phase = .preparing
         defer { if phase == .preparing { phase = .idle } }
         let unsynced = await waitForLocalChanges()
-        guard !Task.isCancelled else { return nil }
+        guard !Task.isCancelled, !requestsStopped else { return nil }
         return PendingTurn(
             turnId: UUID().uuidString.lowercased(), conversationId: conversationId,
             messageId: UUID().uuidString.lowercased(), text: String(text.prefix(4000)),
@@ -193,6 +215,7 @@ final class AssistantStore: VoiceAssistant {
     /// A crash between this write and clearing the vocal draft replays this exact request, including
     /// its timestamps and preconditions. The server's turn receipt prevents a second action.
     func acceptVoice(_ turn: PendingTurn) throws -> Bool {
+        guard !requestsStopped else { return false }
         if pending == turn || snapshots[turn.turnId] != nil { return true }
         guard canAcceptVoice else { return false }
         let encoded = try JSONEncoder().encode(turn)
@@ -211,7 +234,7 @@ final class AssistantStore: VoiceAssistant {
 
     func send(text override: String? = nil, transcriptionId: String? = nil) async {
         let text = (override ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy, pending == nil else { return }
+        guard !requestsStopped, !text.isEmpty, !isBusy, pending == nil else { return }
         notice = nil
         phase = .preparing
         if let undoActionId = revising?.undoActionId {
@@ -222,6 +245,7 @@ final class AssistantStore: VoiceAssistant {
             }
         }
         let unsynced = await waitForLocalChanges()
+        guard !Task.isCancelled, !requestsStopped else { return }
         let turn = PendingTurn(
             turnId: UUID().uuidString.lowercased(),
             conversationId: conversationId,
@@ -241,16 +265,17 @@ final class AssistantStore: VoiceAssistant {
 
     /// "Envoyer" after an offline failure or a lost request: the same identifiers, so never twice.
     func resend() async {
-        guard let pending, !isBusy else { return }
+        guard !requestsStopped, let pending, !isBusy else { return }
         await submit(pending)
     }
 
     /// "Vérifier le résultat": reads the turn; never sends the request again by itself.
     func verify() async {
-        guard let pending, !isBusy else { return }
+        guard !requestsStopped, let pending, !isBusy else { return }
         phase = .waiting
         do {
             let snapshot = try await api.turn(pending.turnId)
+            guard !requestsStopped, !Task.isCancelled else { return }
             if snapshot.isFinished {
                 accept(snapshot)
             } else {
@@ -259,8 +284,10 @@ final class AssistantStore: VoiceAssistant {
                 notice = "L’assistant traite encore la demande. Vérifiez dans un instant."
             }
         } catch APIError.http(404, _, _, _, _, _) {
+            guard !requestsStopped, !Task.isCancelled else { return }
             phase = .notReceived
         } catch {
+            guard !requestsStopped, !Task.isCancelled else { return }
             phase = .unknown
             notice = "Résultat toujours inconnu : vérifiez la connexion."
         }
@@ -283,14 +310,14 @@ final class AssistantStore: VoiceAssistant {
         phase = .waiting
         do {
             let snapshot = try await api.submitTurn(turn.request)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !requestsStopped else { return }
             accept(snapshot)
             AccessibilityNotification.Announcement(Self.announcement(for: snapshot)).post()
         } catch let error as APIError {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !requestsStopped else { return }
             handle(error, for: turn)
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !requestsStopped else { return }
             phase = .unknown
         }
     }
@@ -316,7 +343,11 @@ final class AssistantStore: VoiceAssistant {
             // The transcript was erased (unused for 24 h): the same text goes as a written message.
             forget()
             phase = .idle
-            Task { await send(text: turn.text) }
+            expiredTranscriptSubmission = Task { [weak self] in
+                guard let self, !Task.isCancelled, !self.requestsStopped else { return }
+                await self.send(text: turn.text)
+                if !Task.isCancelled { self.expiredTranscriptSubmission = nil }
+            }
         case .http(let status, let code, let retryAfter, _, let minimumVersion, _):
             // Refused before any processing: nothing happened, the text goes back to the composer.
             forget()

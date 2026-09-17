@@ -122,9 +122,12 @@ function aacChannels(data: Buffer, esds: Box): number {
   if (offset > stream.end) throw new AudioRejected('AUDIO_INVALID', 'Short elementary stream flags');
   const decoder = oneDescriptor(descriptors(data, offset, stream.end), 0x04);
   if (decoder.end - decoder.body < 13) throw new AudioRejected('AUDIO_INVALID', 'Short decoder descriptor');
-  // MPEG-4 audio or MPEG-2 AAC, with streamType AudioStream (5) and its required reserved bit.
-  if (![0x40, 0x66, 0x67, 0x68].includes(data[decoder.body]!) || (data[decoder.body + 1]! >> 2) !== 5
-      || (data[decoder.body + 1]! & 1) !== 1) throw new AudioRejected('AUDIO_INVALID', 'Expected an AAC decoder');
+  // MPEG-4 audio or MPEG-2 AAC, with streamType AudioStream (5). Apple AudioToolbox writes the
+  // reserved low bit as 0 (0x14), while FFmpeg writes 1 (0x15); it does not identify the codec or
+  // channel layout. Accept either and verify the actual AAC configuration below.
+  if (![0x40, 0x66, 0x67, 0x68].includes(data[decoder.body]!) || (data[decoder.body + 1]! >> 2) !== 5) {
+    throw new AudioRejected('AUDIO_INVALID', 'Expected an AAC decoder');
+  }
   const config = oneDescriptor(descriptors(data, decoder.body + 13, decoder.end), 0x05);
   let bit = config.body * 8;
   const endBit = config.end * 8;

@@ -153,7 +153,10 @@ actor APIClient {
 
     func authorized(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json", timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         for attempt in 0..<2 {
+            try Task.checkCancellation()
             let token = try await validAccessToken(forceRefresh: attempt > 0)
+            // Token refresh is shared by callers; cancelling one caller must still prevent its upload.
+            try Task.checkCancellation()
             var request = URLRequest(url: baseURL.appending(path: path))
             request.httpMethod = method
             request.timeoutInterval = timeout

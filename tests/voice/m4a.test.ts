@@ -6,6 +6,9 @@ import { AudioRejected, inspectM4a } from '../../src/modules/voice/index.js';
 // layouts; they are not claimed to be recordings captured on an iPhone.
 const mono = readFileSync(new URL('../fixtures/audio/tone-3s-mono.m4a', import.meta.url));
 const stereo = readFileSync(new URL('../fixtures/audio/tone-3s-stereo.m4a', import.meta.url));
+// Synthetic 440 Hz tone encoded by Apple AVAudioFile on CI, using ios/scripts/generate-audio-fixture.swift.
+// Contains no speech or personal audio. AAC priming/padding makes its movie duration slightly over 3 s.
+const appleMono = readFileSync(new URL('../fixtures/audio/apple-tone-3s-mono.m4a', import.meta.url));
 
 function rejection(data: Buffer, declared = 3000): string {
   try {
@@ -81,6 +84,14 @@ describe('M4A structural check', () => {
     // The declared duration may differ by up to 1.5 s (recorder rounding).
     expect(inspectM4a(mono, 4500).durationMs).toBe(3000);
     expect(inspectM4a(mono, 1500).durationMs).toBe(3000);
+  });
+
+  it('accepts a real Apple-encoded mono AAC fixture with legacy stereo count and reserved decoder bit 0', () => {
+    expect(appleMono.readUInt16BE(appleMono.indexOf(Buffer.from('mp4a')) + 20)).toBe(2);
+    const info = inspectM4a(appleMono, 3000);
+    expect(info).toMatchObject({ channels: 1, codec: 'mp4a', brand: 'M4A ' });
+    expect(info.durationMs).toBe(3111);
+    expect(Math.abs(info.durationMs - 3000)).toBeLessThanOrEqual(1500);
   });
 
   it('uses the AAC channel configuration even when the legacy sample entry says stereo', () => {
