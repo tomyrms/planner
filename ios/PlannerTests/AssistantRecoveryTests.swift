@@ -1,4 +1,5 @@
 import Foundation
+import PowerSync
 import Testing
 @testable import Planner
 
@@ -16,7 +17,8 @@ struct AssistantRecoveryTests {
             #expect(fixture.store.phase == .refused)
             #expect(fixture.store.pending == fixture.original)
             #expect(fixture.store.draft == fixture.existingDraft)
-            #expect(try fixture.persistedPending() == fixture.original)
+            let persisted = try fixture.persistedPending()
+            #expect(persisted == fixture.original)
             #expect(fixture.store.entries.last?.message.text == fixture.original.text)
         }
     }
@@ -31,7 +33,8 @@ struct AssistantRecoveryTests {
 
             #expect(fixture.store.phase == .unknown)
             #expect(fixture.store.pending == fixture.original)
-            #expect(try fixture.persistedPending() == fixture.original)
+            let persisted = try fixture.persistedPending()
+            #expect(persisted == fixture.original)
             fixture.store.discardPending()
             #expect(fixture.store.pending == fixture.original)
             #expect(fixture.store.draft == fixture.existingDraft)
@@ -48,7 +51,8 @@ struct AssistantRecoveryTests {
             // everything it needs, before the task has even had a chance to call submit().
             let replacement = try #require(fixture.store.pending)
             fixture.store.stopRequests()
-            #expect(try fixture.persistedPending() == replacement)
+            let persisted = try fixture.persistedPending()
+            #expect(persisted == replacement)
             #expect(replacement.turnId != fixture.original.turnId)
             #expect(replacement.messageId != fixture.original.messageId)
             #expect(replacement.transcriptionId == nil)
@@ -89,7 +93,8 @@ struct AssistantRecoveryTests {
     @Test func stoppingKeepsRecoveryButSuccessfulUnpairClearsThePairingState() async throws {
         try await withFixture { fixture in
             fixture.store.stopRequests()
-            #expect(try fixture.persistedPending() == fixture.original)
+            let persisted = try fixture.persistedPending()
+            #expect(persisted == fixture.original)
             #expect(fixture.defaults.string(forKey: "assistant.draft") == fixture.existingDraft)
 
             fixture.store.clearPairingState()
@@ -129,9 +134,11 @@ struct AssistantRecoveryTests {
                 referenceInstant: original.referenceInstant, timeZone: original.timeZone,
                 unsyncedAggregateIds: original.unsyncedAggregateIds
             )
-            #expect(try fixture.store.acceptVoice(longVoice))
+            let accepted = try fixture.store.acceptVoice(longVoice)
+            #expect(accepted)
             #expect(fixture.store.phase == .refused)
-            #expect(try fixture.persistedPending() == longVoice)
+            let persisted = try fixture.persistedPending()
+            #expect(persisted == longVoice)
             #expect(fixture.store.pending?.text.count == 4001)
         }
     }

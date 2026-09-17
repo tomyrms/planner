@@ -7,6 +7,7 @@ import Testing
 struct VoiceMessageStoreTests {
     private static let transcriptionId = "11111111-1111-4111-8111-111111111111"
     private static let conversationId = "22222222-2222-4222-8222-222222222222"
+    private static let audioFileName = "mémo vocal 01.m4a"
 
     @Test func lostUploadResponseIsRecoveredByReadingWithoutUploadingAgain() async throws {
         let fixture = try Fixture()
@@ -23,13 +24,49 @@ struct VoiceMessageStoreTests {
 
         await store.send()
         #expect(store.draft?.state == .pending)
-        #expect(FileManager.default.fileExists(atPath: fixture.audio.path()))
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path(percentEncoded: false)))
         await store.verify()
 
         #expect(await api.calls == ["GET", "POST", "GET"])
         #expect(assistant.accepted.count == 1)
         #expect(store.draft == nil)
-        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path()))
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path(percentEncoded: false)))
+    }
+
+    @Test(arguments: [true, false])
+    func oldMissingFileFailureCanRetryOnlyWhenTheAudioActuallyExists(_ fileExists: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var saved = draft(state: .failed)
+        saved.errorCode = "AUDIO_FILE_MISSING"
+        try fixture.seed(saved)
+        if !fileExists { try FileManager.default.removeItem(at: fixture.audio) }
+        let api = FakeVoiceAPI(
+            reads: [.failure(.http(status: 404, code: "TRANSCRIPTION_NOT_FOUND", retryAfter: nil, serverGeneration: nil, minimumVersion: nil, message: nil))],
+            upload: .success(snapshot("completed", text: "Le vocal déjà enregistré est récupéré"))
+        )
+        let assistant = FakeVoiceAssistant()
+        let store = fixture.store(api, assistant)
+        defer { store.stop() }
+
+        #expect(store.canRetry == fileExists)
+        let restoredData = try #require(fixture.defaults.data(forKey: "voice.draft"))
+        let restored = try JSONDecoder().decode(VoiceDraft.self, from: restoredData)
+        #expect(restored.errorCode == (fileExists ? nil : "AUDIO_FILE_MISSING"))
+        #expect(restored.transcriptionId == saved.transcriptionId)
+        await store.send()
+
+        if fileExists {
+            #expect(await api.calls == ["GET", "POST"])
+            #expect(assistant.accepted.first?.transcriptionId == saved.transcriptionId)
+            #expect(assistant.accepted.first?.text == "Le vocal déjà enregistré est récupéré")
+            #expect(store.draft == nil)
+        } else {
+            #expect(await api.calls == ["GET"])
+            #expect(assistant.accepted.isEmpty)
+            #expect(store.draft?.errorCode == "AUDIO_FILE_MISSING")
+            #expect(!store.canRetry)
+        }
     }
 
     @Test func busyAssistantKeepsTranscriptAndOriginalConversationUntilAdmission() async throws {
@@ -46,7 +83,7 @@ struct VoiceMessageStoreTests {
         #expect(store.draft?.transcript == "Une demande à garder")
         #expect(store.draft?.state == .transcribed)
         #expect(assistant.accepted.isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path()))
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path(percentEncoded: false)))
 
         assistant.canAcceptVoice = true
         assistant.onAccept = { turn in
@@ -163,7 +200,7 @@ struct VoiceMessageStoreTests {
 
         #expect(store.draft == nil)
         #expect(fixture.defaults.data(forKey: "voice.draft") == nil)
-        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path()))
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path(percentEncoded: false)))
         #expect(assistant.accepted.isEmpty)
         #expect(await api.calls == ["GET"])
     }
@@ -192,7 +229,7 @@ struct VoiceMessageStoreTests {
 
     private func draft(state: VoiceDraft.State = .ready) -> VoiceDraft {
         VoiceDraft(
-            transcriptionId: Self.transcriptionId, fileName: "message.m4a", durationMs: 2500,
+            transcriptionId: Self.transcriptionId, fileName: Self.audioFileName, durationMs: 2500,
             createdAt: Date(), state: state, conversationId: Self.conversationId
         )
     }
@@ -205,13 +242,18 @@ struct VoiceMessageStoreTests {
     private struct Fixture {
         let name: String
         let defaults: UserDefaults
+        let root: URL
         let directory: URL
-        var audio: URL { directory.appending(path: "message.m4a") }
+        var audio: URL { directory.appending(path: VoiceMessageStoreTests.audioFileName) }
 
         init() throws {
             name = "voice-tests-" + UUID().uuidString
             defaults = try #require(UserDefaults(suiteName: name))
-            directory = URL.temporaryDirectory.appending(path: name, directoryHint: .isDirectory)
+            root = URL.temporaryDirectory.appending(path: name, directoryHint: .isDirectory)
+            // Match the iPhone's real directory and exercise decoded filesystem paths on upload,
+            // recovery and cleanup. Neither the directory nor the filename is URL-safe as written.
+            directory = root.appending(path: "Application Support", directoryHint: .isDirectory)
+                .appending(path: "PendingAudio", directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
@@ -226,7 +268,7 @@ struct VoiceMessageStoreTests {
 
         func remove() {
             defaults.removePersistentDomain(forName: name)
-            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: root)
         }
     }
 }

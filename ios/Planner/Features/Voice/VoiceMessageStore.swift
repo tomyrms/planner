@@ -66,13 +66,14 @@ final class VoiceMessageStore {
             draft = saved
         }
         removeUnreferencedFiles()
+        recoverPreviouslyMissingAudio()
         if !expireIfNeeded() { scheduleExpiry() }
         recorder.onAutomaticStop = { [weak self] outcome in self?.handle(outcome) }
     }
 
     var isWorking: Bool { phase != .idle && phase != .recording }
     var canRetry: Bool {
-        draft?.errorCode.map { !Self.permanentCodes.contains($0) } ?? true
+        return draft?.errorCode.map { !Self.permanentCodes.contains($0) } ?? true
     }
 
     // MARK: - Recording
@@ -131,6 +132,7 @@ final class VoiceMessageStore {
     /// Only reads on recovery: a failed transcription never causes another paid attempt by itself.
     func appDidBecomeActive() async {
         guard !stopped, !expireIfNeeded(), let current = draft else { return }
+        recoverPreviouslyMissingAudio()
         if current.state == .pending || current.transcript != nil || current.handoff != nil {
             await verify()
         }
@@ -165,7 +167,7 @@ final class VoiceMessageStore {
 
     private func keep(url: URL, durationMs: Int, conversation: String, interrupted: Bool) {
         try? FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path()
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path(percentEncoded: false)
         )
         do {
             try save(VoiceDraft(
@@ -245,7 +247,7 @@ final class VoiceMessageStore {
                     notice = "Le serveur n’a pas reçu ce vocal. Vous pouvez l’envoyer."
                     return
                 }
-                guard FileManager.default.fileExists(atPath: fileURL(current).path()) else {
+                guard FileManager.default.fileExists(atPath: fileURL(current).path(percentEncoded: false)) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
                 current.state = .pending
@@ -371,6 +373,16 @@ final class VoiceMessageStore {
 
     private func fileURL(_ value: VoiceDraft) -> URL { audioDirectory.appending(path: value.fileName) }
 
+    /// Old builds marked existing files as missing by passing an encoded path to FileManager.
+    /// Repair that persisted failure during restoration, never from SwiftUI's body.
+    private func recoverPreviouslyMissingAudio() {
+        guard var current = draft, current.errorCode == "AUDIO_FILE_MISSING",
+              FileManager.default.fileExists(atPath: fileURL(current).path(percentEncoded: false)) else { return }
+        current.errorCode = nil
+        try? save(current)
+        notice = "Le vocal enregistré est disponible. Vous pouvez réessayer."
+    }
+
     // MARK: - Retention
 
     @discardableResult
@@ -393,7 +405,7 @@ final class VoiceMessageStore {
     }
 
     private func removeUnreferencedFiles() {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: audioDirectory.path()) else { return }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: audioDirectory.path(percentEncoded: false)) else { return }
         for name in names where name != draft?.fileName || draft?.transcript != nil {
             try? FileManager.default.removeItem(at: audioDirectory.appending(path: name))
         }
