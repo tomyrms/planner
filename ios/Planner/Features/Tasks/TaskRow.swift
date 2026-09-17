@@ -18,6 +18,8 @@ struct TaskRow: View {
     @Environment(AppServices.self) private var services
     @State private var sheet: RowSheet?
     @State private var errorMessage: String?
+    @State private var subtasksExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(task: TaskItem, context: TaskRowContext = .list) {
         item = .simple(task)
@@ -60,40 +62,20 @@ struct TaskRow: View {
 
     var body: some View {
         let occurrence = self.occurrence
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.md) {
-            if context != .trash {
-                Button { check(occurrence) } label: {
-                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.title3)
-                        .foregroundStyle(task.isCompleted ? Color.accentColor : Color.secondary)
-                        .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .disabled(!canCheck(occurrence))
-                .sensoryFeedback(.impact(weight: .light), trigger: task.isCompleted)
+        VStack(alignment: .leading, spacing: 0) {
+            header(occurrence)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilitySentence(occurrence))
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { open(occurrence) }
+                .accessibilityActions { menu(occurrence, withLists: false) }
+            if subtasksExpanded && !task.subtasks.isEmpty {
+                TaskSubtaskList(subtasks: task.subtasks)
+                    .padding(.leading, context == .trash ? 0 : TouchTarget.comfort + Spacing.md)
             }
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text(task.title)
-                    .foregroundStyle(task.isCompleted || task.isDeleted ? Color.secondary : Color.primary)
-                    .strikethrough(task.isCompleted)
-                if let details = details(occurrence) {
-                    Group {
-                        if task.isRecurring {
-                            Text("\(Image(systemName: "repeat")) \(details)")
-                        } else {
-                            Text(details)
-                        }
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, context == .trash ? Spacing.sm : 0)
-            Spacer(minLength: 0)
         }
-        .contentShape(Rectangle())
-        .onTapGesture { open(occurrence) }
+        .onChange(of: task.id) { subtasksExpanded = false }
+        .onChange(of: task.subtasks.isEmpty) { _, empty in if empty { subtasksExpanded = false } }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             if canCheck(occurrence) {
                 Button(checkTitle, systemImage: task.isCompleted ? "arrow.uturn.backward" : "checkmark") { check(occurrence) }
@@ -132,20 +114,64 @@ struct TaskRow: View {
                 }
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilitySentence(occurrence))
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { open(occurrence) }
-        .accessibilityActions { menu(occurrence, withLists: false) }
         .alert("Modification impossible", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
+    }
+
+    private func header(_ occurrence: AgendaItem?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.md) {
+            if context != .trash {
+                Button { check(occurrence) } label: {
+                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(task.isCompleted ? Color.accentColor : Color.secondary)
+                        .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canCheck(occurrence))
+                .sensoryFeedback(.impact(weight: .light), trigger: task.isCompleted)
+            }
+            Button { open(occurrence) } label: {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text(task.title)
+                        .foregroundStyle(task.isCompleted || task.isDeleted ? Color.secondary : Color.primary)
+                        .strikethrough(task.isCompleted)
+                    if let details = details(occurrence) {
+                        Group {
+                            if task.isRecurring {
+                                Text("\(Image(systemName: "repeat")) \(details)")
+                            } else {
+                                Text(details)
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, context == .trash ? Spacing.sm : 0)
+                .frame(maxWidth: .infinity, minHeight: TouchTarget.comfort, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            if !task.subtasks.isEmpty {
+                TaskSubtaskDisclosureButton(taskTitle: task.title, subtasks: task.subtasks, isExpanded: $subtasksExpanded)
+            }
+        }
     }
 
     // MARK: - Menu
 
     @ViewBuilder
     private func menu(_ occurrence: AgendaItem?, withLists: Bool) -> some View {
+        if !task.subtasks.isEmpty {
+            Button(subtasksExpanded ? "Masquer les sous-tâches" : "Afficher les sous-tâches", systemImage: subtasksExpanded ? "chevron.down" : "chevron.right") {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { subtasksExpanded.toggle() }
+            }
+        }
         if let occurrence, !task.isDeleted {
             if isMissedGroup {
                 Button("Terminer la plus récente", systemImage: "checkmark") { complete(occurrence) }
@@ -250,6 +276,9 @@ struct TaskRow: View {
 
     private func accessibilitySentence(_ occurrence: AgendaItem?) -> String {
         var sentence = task.title
+        if !task.subtasks.isEmpty {
+            sentence += ", \(task.subtasks.filter(\.isCompleted).count) sous-tâches terminées sur \(task.subtasks.count), " + (subtasksExpanded ? "sous-tâches affichées" : "sous-tâches masquées")
+        }
         if task.isRecurring { sentence += ", tâche répétée" }
         if let details = details(occurrence) { sentence += ", " + details }
         if task.isDeleted {

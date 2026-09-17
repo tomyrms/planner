@@ -38,6 +38,7 @@ private struct CustomDurationView: View {
                     if let value { Text(DurationText.format(value)).foregroundStyle(.secondary) }
                 } footer: { Text("Entre 1 et 1 440 minutes (24 heures).") }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Durée personnalisée")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

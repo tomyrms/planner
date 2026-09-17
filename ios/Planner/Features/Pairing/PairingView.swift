@@ -57,6 +57,7 @@ struct PairingView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Appairage")
         }
     }

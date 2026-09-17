@@ -24,6 +24,9 @@ final class AssistantChatRenderTests: XCTestCase {
             AssistantChatPreview(kind: .proposal), name: "09-proposal-light-accessibility3",
             typeSize: .accessibility3
         )
+        try attach(TaskSubtasksPreview(expanded: false), name: "10-subtasks-collapsed-light")
+        try attach(TaskSubtasksPreview(expanded: true), name: "11-subtasks-expanded-dark", appearance: .dark)
+        try attach(TaskSubtasksPreview(expanded: true), name: "12-subtasks-expanded-accessibility3", typeSize: .accessibility3)
     }
 
     @MainActor

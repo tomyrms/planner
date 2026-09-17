@@ -73,6 +73,7 @@ struct SyncRecoveryView: View {
                     Section { Text(message).foregroundStyle(.secondary) }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Récupération")
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled()

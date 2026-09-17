@@ -72,4 +72,35 @@ struct QuickCaptureGestureTests {
         gesture.finish()
         #expect(gesture.stage == .finished)
     }
+
+    @Test func aSeparateTapAfterLockingAuthorizesSendingExactlyOnce() {
+        var gesture = QuickCaptureGesture()
+        _ = gesture.begin()
+        _ = gesture.move(x: 0, y: -80)
+        #expect(gesture.release() == nil) // Lifting the original finger never authorizes an upload.
+        #expect(gesture.stage == .locked)
+        #expect(gesture.send() == .send)
+        #expect(gesture.stage == .finished)
+        #expect(gesture.send() == nil)
+        #expect(gesture.release() == nil)
+        #expect(gesture.interrupt() == nil)
+    }
+
+    @Test func sendCannotReplaceAnUnlockedReleaseCancelOrInterruption() {
+        var gesture = QuickCaptureGesture()
+        #expect(gesture.send() == nil)
+        _ = gesture.begin()
+        #expect(gesture.send() == nil)
+        #expect(gesture.release() == .finish)
+        #expect(gesture.send() == nil)
+        gesture.reset()
+        _ = gesture.begin()
+        _ = gesture.move(x: -100, y: 0)
+        #expect(gesture.send() == nil)
+        gesture.reset()
+        _ = gesture.begin()
+        _ = gesture.move(x: 0, y: -80)
+        #expect(gesture.interrupt() == .interrupt)
+        #expect(gesture.send() == nil)
+    }
 }

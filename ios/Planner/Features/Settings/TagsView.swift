@@ -192,6 +192,7 @@ private struct TagEditorView: View {
                 } footer: { Text("Jusqu’à 50 caractères. Les accents distinguent les noms ; les majuscules ne les distinguent pas.") }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(tag == nil ? "Nouveau tag" : "Renommer le tag")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

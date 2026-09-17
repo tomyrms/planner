@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Raised central action. Only an active gesture reveals its instructions; it never submits audio.
+/// Raised central action. Release keeps a draft; only a separate tap on the locked arrow sends it.
 struct QuickCaptureAccessory: View {
     @Environment(AppServices.self) private var services
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -22,6 +22,10 @@ struct QuickCaptureAccessory: View {
     private var voice: VoiceMessageStore { services.voice }
     private var capturing: Bool { gesture.stage == .holding || gesture.stage == .locked }
     private var finishing: Bool { gesture.stage == .finished || (captureId != nil && voice.phase == .finishing) }
+    private var canSendLocked: Bool {
+        gesture.stage == .locked && captureId != nil && finishTask == nil &&
+            voice.phase == .recording && voice.recorder.isRecording && !voice.isPreparingRecording && voice.draft == nil
+    }
 
     var body: some View {
         @Bindable var voice = services.voice
@@ -29,22 +33,33 @@ struct QuickCaptureAccessory: View {
             ZStack {
                 Circle().fill(Color.accentColor.gradient)
                     .shadow(color: Color.accentColor.opacity(0.22), radius: 5, y: 3)
-                Image(systemName: capturing || finishing ? (gesture.stage == .locked ? "lock.fill" : "mic.fill") : "plus")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .offset(
-                        x: reduceMotion ? 0 : CGFloat(-gesture.cancelProgress * 5),
-                        y: reduceMotion ? 0 : CGFloat(-gesture.lockProgress * 5)
-                    )
-                    .accessibilityHidden(true)
+                if finishing {
+                    ProgressView().tint(.white).accessibilityHidden(true)
+                } else {
+                    Image(systemName: gesture.stage == .locked ? "arrow.up" : capturing ? "mic.fill" : "plus")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .opacity(gesture.stage == .locked && !canSendLocked ? 0.5 : 1)
+                        .offset(
+                            x: reduceMotion ? 0 : CGFloat(-gesture.cancelProgress * 5),
+                            y: reduceMotion ? 0 : CGFloat(-gesture.lockProgress * 5)
+                        )
+                        .accessibilityHidden(true)
+                }
                 Circle()
                     .trim(from: 0, to: CGFloat(gesture.lockProgress))
                     .stroke(Color.primary, lineWidth: 3)
                     .padding(-3)
                     .accessibilityHidden(true)
                 QuickCaptureTouchControl(
-                    recordingLabel: finishing ? "Finalisation du vocal" : capturing ? (gesture.stage == .locked ? "Enregistrement verrouillé" : "Enregistrement vocal") : nil,
+                    recordingLabel: finishing ? "Finalisation du vocal" : capturing ? (voice.isPreparingRecording ? "Préparation du micro" : gesture.stage == .locked ? "Enregistrement verrouillé" : "Enregistrement vocal") : nil,
+                    sendAvailable: canSendLocked,
                     onTap: {
+                        if gesture.stage == .locked {
+                            guard canSendLocked, gesture.send() == .send else { return }
+                            finish(interrupted: false, send: true)
+                            return
+                        }
                         guard gesture.stage == .idle, !voice.isPreparingRecording, voice.phase != .recording else { return }
                         onAddTask()
                     },
@@ -206,7 +221,7 @@ struct QuickCaptureAccessory: View {
         }
     }
 
-    private func finish(interrupted: Bool) {
+    private func finish(interrupted: Bool, send: Bool = false) {
         guard finishTask == nil, let id = captureId else { return }
         gesture.finish()
         startTask?.cancel()
@@ -218,12 +233,20 @@ struct QuickCaptureAccessory: View {
             return
         }
         finishTask = Task {
-            if interrupted { await voice.appWillResignActive() } else { await voice.stopRecording() }
+            if interrupted {
+                await voice.appWillResignActive()
+            } else if send {
+                // The store owns the consent and the recording identity through finalization.
+                // It starts its existing upload operation; the view must never call send() again.
+                await voice.stopRecordingAndSend()
+            } else {
+                await voice.stopRecording()
+            }
             guard !Task.isCancelled, captureId == id else { return }
             finishTask = nil
             // Another owner (scene lifecycle/automatic stop) may still be measuring the audio.
             // Keep this capture visible; onChange(.idle) will finish it once the draft is persisted.
-            if voice.phase != .finishing { completeCapture(id: id) }
+            if voice.phase != .finishing && voice.phase != .recording { completeCapture(id: id) }
         }
     }
 
@@ -238,6 +261,16 @@ struct QuickCaptureAccessory: View {
     }
 
     private func interrupt() {
+        if gesture.stage == .finished, captureId != nil,
+           voice.phase == .recording || voice.phase == .finishing || voice.isPreparingRecording {
+            // The send tap already ended the gesture, but finalization may still be suspended.
+            // Cancel its caller before invalidating the store's intent; if it had not started yet,
+            // appWillResignActive still stops the recorder and preserves a draft.
+            finishTask?.cancel()
+            finishTask = nil
+            finish(interrupted: true)
+            return
+        }
         guard gesture.interrupt() != nil else { return }
         finish(interrupted: true)
     }

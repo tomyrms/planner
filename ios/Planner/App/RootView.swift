@@ -22,6 +22,7 @@ struct RootView: View {
                 ContentUnavailableView("Démarrage impossible", systemImage: "exclamationmark.triangle", description: Text(message))
             }
         }
+        .dismissKeyboardOnBackgroundTap()
         .task { await app.launch() }
         .onChange(of: scenePhase) { _, phase in
             guard case .ready(let services) = app.phase, !services.isRecoverySuspended else { return }

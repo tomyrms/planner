@@ -63,6 +63,8 @@ final class VoiceMessageStore {
     @ObservationIgnored private var abandonments: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var recordingConversation: String?
     @ObservationIgnored private var recordingIntent: UUID?
+    /// Explicit send on the locked capture belongs to this recording, never to an older draft.
+    @ObservationIgnored private var sendAfterRecordingIntent: UUID?
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private var recoverySuspended = false
 
@@ -120,6 +122,7 @@ final class VoiceMessageStore {
         }
         let intent = UUID()
         recordingIntent = intent
+        sendAfterRecordingIntent = nil
         notice = nil
         recordingConversation = assistant.conversationId
         isPreparingRecording = true
@@ -156,7 +159,17 @@ final class VoiceMessageStore {
         handle(outcome, intent: intent)
     }
 
+    /// The locked capture's Send button. Finalize and persist before admitting the store-owned
+    /// operation; the caller can remove its recording controls without waiting for the network.
+    func stopRecordingAndSend() async {
+        guard !stopped, !recoverySuspended, !Task.isCancelled, phase == .recording,
+              recorder.isRecording, draft == nil, let intent = recordingIntent else { return }
+        sendAfterRecordingIntent = intent
+        await stopRecording()
+    }
+
     func cancelRecording() {
+        sendAfterRecordingIntent = nil
         recordingConversation = nil
         recordingIntent = nil
         isPreparingRecording = false
@@ -165,6 +178,8 @@ final class VoiceMessageStore {
     }
 
     func appWillResignActive() async {
+        // Leaving the foreground during duration measurement keeps a draft, not an automatic send.
+        sendAfterRecordingIntent = nil
         if isPreparingRecording {
             cancelRecording()
         } else if phase == .recording {
@@ -200,6 +215,8 @@ final class VoiceMessageStore {
             }
             return
         }
+        let shouldSend = sendAfterRecordingIntent == intent && !recoverySuspended && !Task.isCancelled
+        sendAfterRecordingIntent = nil
         recordingConversation = nil
         recordingIntent = nil
         isPreparingRecording = false
@@ -207,7 +224,13 @@ final class VoiceMessageStore {
         switch outcome {
         case .finished(let url, let durationMs):
             if keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: false) {
-                notice = "Vocal prêt à envoyer."
+                if shouldSend {
+                    // No suspension between persistence and operation admission: a view observing
+                    // .idle cannot substitute another draft or steal the explicit send decision.
+                    _ = beginOperation(allowUpload: true)
+                } else {
+                    notice = "Vocal prêt à envoyer."
+                }
             }
         case .interrupted(let url, let durationMs):
             if keep(url: url, durationMs: durationMs, conversation: conversation, interrupted: true) {
@@ -269,6 +292,7 @@ final class VoiceMessageStore {
 
     /// Pausing the wait does not claim that the server stopped its transcription.
     func pause() {
+        sendAfterRecordingIntent = nil
         operation?.cancel()
         operation = nil
         operationId = nil
@@ -401,6 +425,7 @@ final class VoiceMessageStore {
     /// Let AVURLAsset finish before marking the store stopped, otherwise its callback deletes the file.
     func suspendPreservingDraft() async throws {
         recoverySuspended = true
+        sendAfterRecordingIntent = nil
         if stopped { return }
         if phase != .recording && phase != .finishing { pause() }
         await appWillResignActive()

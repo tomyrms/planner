@@ -10,15 +10,21 @@ Le correctif vocal conserve un brouillon reprenable, distingue les étapes d'env
 
 ## Capture rapide
 
-Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** dans la barre du bas, ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Les indications apparaissent pendant la capture. Après verrouillage, une petite capsule garde la durée et les commandes Arrêter/Annuler ; retirez le doigt. Un relâchement sans verrouillage arrête aussi l'enregistrement.
+Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** dans la barre du bas, ouvre l'éditeur de tâche. Maintenez-le pour dicter : glissez **vers le haut pour verrouiller** ou **vers la gauche pour annuler**. Les indications apparaissent pendant la capture. Après verrouillage, retirez le doigt : le bouton central devient une **flèche Envoyer**. Un appui dessus arrête et envoie le vocal. Une petite capsule garde la durée et les commandes Arrêter/Annuler ; Arrêter conserve seulement un brouillon. Un relâchement sans verrouillage arrête aussi l'enregistrement.
 
-L'arrêt conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
+L'arrêt simple conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. La flèche centrale combine ces deux étapes après une action explicite ; le verrouillage seul et les interruptions n'envoient rien. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
 
 ## Conversation de l'assistant
 
 Le chat utilise des bulles neutres pour les demandes, des réponses directement sur le fond et des résultats structurés sans empiler les cartes. Une proposition à confirmer garde une surface distincte. Le champ arrondi et son bouton d'envoi circulaire reprennent les formes et l'accent du + central. Les contrôles d'enregistrement restent dans la capsule globale lorsqu'elle est visible ; le micro du chat possède ses propres contrôles.
 
-Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. Le workflow produit l'artifact **assistant-chat-renders** : neuf planches SwiftUI avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
+Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. Le workflow produit l'artifact **assistant-chat-renders** : douze planches SwiftUI du chat et des sous-tâches avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
+
+## Sous-tâches et clavier
+
+Les tâches avec sous-tâches disposent d'un chevron et d'un compteur discret dans les listes, les recherches, l'agenda du calendrier et les liens de tâches de l'assistant. Le chevron ouvre ou replie les intitulés et leur état ; le titre ouvre toujours l'éditeur, où se modifient et se cochent les sous-tâches.
+
+Faire défiler un formulaire ou la recherche ferme le clavier de façon interactive. Un appui dans le fond ferme aussi le champ actif sans perdre son texte. Toucher un autre champ, sélectionner du texte ou activer un contrôle garde son fonctionnement natif ; ce comportement s'applique également aux feuilles de saisie.
 
 ## Exporter les données locales
 

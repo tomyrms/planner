@@ -476,31 +476,44 @@ private struct TaskLink: View {
     @State private var loaded = false
     @State private var readFailed = false
     @State private var retry = 0
+    @State private var subtasksExpanded = false
 
     var body: some View {
         Group {
             if let task {
-                Button {
-                    editing = true
-                } label: {
-                    HStack(spacing: Spacing.sm) {
-                        Image(systemName: "checklist")
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                        Text(task.title)
-                            .font(.subheadline)
-                            .strikethrough(task.isCompleted)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.footnote)
-                            .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
+                        Button { editing = true } label: {
+                            HStack(spacing: Spacing.sm) {
+                                Image(systemName: "checklist")
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
+                                Text(task.title)
+                                    .font(.subheadline)
+                                    .strikethrough(task.isCompleted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.leading)
+                                Spacer(minLength: 0)
+                                if task.subtasks.isEmpty {
+                                    Image(systemName: "chevron.right")
+                                        .font(.footnote)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .frame(minHeight: TouchTarget.comfort)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Ouvrir « \(task.title) »")
+                        if !task.subtasks.isEmpty {
+                            TaskSubtaskDisclosureButton(taskTitle: task.title, subtasks: task.subtasks, isExpanded: $subtasksExpanded)
+                        }
                     }
-                    .frame(minHeight: TouchTarget.comfort)
-                    .contentShape(Rectangle())
+                    if subtasksExpanded && !task.subtasks.isEmpty {
+                        TaskSubtaskList(subtasks: task.subtasks).padding(.leading, Spacing.xl)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Ouvrir « \(task.title) »")
+                .onChange(of: task.subtasks.isEmpty) { _, empty in if empty { subtasksExpanded = false } }
                 .sheet(isPresented: $editing) {
                     TaskEditorView(mode: .edit(task))
                 }

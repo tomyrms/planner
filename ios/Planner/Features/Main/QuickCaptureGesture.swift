@@ -3,7 +3,7 @@ import Foundation
 /// UIKit owns touch recognition; this reducer decides the recording gesture exactly once.
 nonisolated struct QuickCaptureGesture: Equatable, Sendable {
     enum Stage: Equatable, Sendable { case idle, holding, locked, finished, cancelled }
-    enum Intent: Equatable, Sendable { case start, lock, finish, cancel, interrupt }
+    enum Intent: Equatable, Sendable { case start, lock, finish, send, cancel, interrupt }
     private(set) var stage: Stage = .idle
     private(set) var lockProgress: Double = 0
     private(set) var cancelProgress: Double = 0
@@ -35,6 +35,13 @@ nonisolated struct QuickCaptureGesture: Equatable, Sendable {
         guard stage == .holding else { return nil }
         stage = .finished
         return .finish
+    }
+
+    /// A separate tap after locking is explicit consent to send. Releasing the original hold is not.
+    mutating func send() -> Intent? {
+        guard stage == .locked else { return nil }
+        stage = .finished
+        return .send
     }
 
     mutating func interrupt() -> Intent? {

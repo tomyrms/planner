@@ -34,6 +34,7 @@ struct ProjectEditorView: View {
                     Section { Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .disabled(saving)
             .navigationTitle(project == nil ? "Nouvelle liste" : "Modifier la liste")
             .navigationBarTitleDisplayMode(.inline)

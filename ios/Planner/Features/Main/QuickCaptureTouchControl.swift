@@ -4,6 +4,7 @@ import UIKit
 /// A native recognizer avoids firing a tap when a long press ends, including outside the 44 pt target.
 struct QuickCaptureTouchControl: UIViewRepresentable {
     var recordingLabel: String?
+    var sendAvailable = false
     var onTap: () -> Void
     var onBegin: () -> Void
     var onMove: (Double, Double) -> Void
@@ -15,7 +16,7 @@ struct QuickCaptureTouchControl: UIViewRepresentable {
 
     func updateUIView(_ view: CaptureTouchView, context: Context) {
         view.actions = self
-        view.updateAccessibility(recordingLabel: recordingLabel)
+        view.updateAccessibility(recordingLabel: recordingLabel, sendAvailable: sendAvailable)
     }
 
     static func dismantleUIView(_ view: CaptureTouchView, coordinator: ()) {
@@ -48,12 +49,16 @@ final class CaptureTouchView: UIView {
 
     required init?(coder: NSCoder) { nil }
 
-    func updateAccessibility(recordingLabel: String?) {
-        accessibilityTraits = recordingLabel == nil ? .button : .staticText
-        accessibilityLabel = recordingLabel ?? "Ajouter une tâche"
-        accessibilityHint = recordingLabel == nil
-            ? "Touchez pour écrire une tâche. L’action Enregistrer un vocal permet de dicter."
-            : "Les boutons Arrêter et Annuler restent disponibles."
+    func updateAccessibility(recordingLabel: String?, sendAvailable: Bool = false) {
+        accessibilityTraits = recordingLabel == nil || sendAvailable ? .button : .staticText
+        accessibilityLabel = sendAvailable ? "Envoyer le vocal" : recordingLabel ?? "Ajouter une tâche"
+        if sendAvailable {
+            accessibilityHint = "Arrête l’enregistrement et envoie le message à l’assistant."
+        } else {
+            accessibilityHint = recordingLabel == nil
+                ? "Touchez pour écrire une tâche. L’action Enregistrer un vocal permet de dicter."
+                : "Les boutons Arrêter et Annuler restent disponibles."
+        }
         accessibilityCustomActions = recordingLabel == nil ? [
             UIAccessibilityCustomAction(name: "Enregistrer un vocal") { [weak self] _ in
                 self?.actions?.onAccessibleRecord()
@@ -63,7 +68,8 @@ final class CaptureTouchView: UIView {
     }
 
     override func accessibilityActivate() -> Bool {
-        actions?.onTap()
+        guard let actions, actions.recordingLabel == nil || actions.sendAvailable else { return false }
+        actions.onTap()
         return true
     }
 

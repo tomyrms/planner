@@ -18,6 +18,7 @@ struct ListsView: View {
                     SearchResultsView(query: query)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Listes")
             .searchable(text: $query, prompt: "Tâches et listes")
             .toolbar {
