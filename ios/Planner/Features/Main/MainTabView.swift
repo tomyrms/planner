@@ -8,11 +8,11 @@ struct MainTabView: View {
     @State private var addingTask = false
     @State private var navigationTask: Task<Void, Never>?
 
-    private enum Destination: Hashable { case today, calendar, assistant, lists }
+    private nonisolated enum Destination: Hashable { case today, calendar, assistant, lists }
 
     var body: some View {
         @Bindable var navigator = services.navigator
-        TabView(selection: Binding(get: { selection }, set: select)) {
+        TabView(selection: Binding(get: { selection }, set: { destination in select(destination) })) {
             Tab("Aujourd’hui", systemImage: "sun.max", value: Destination.today) {
                 TodayView()
             }

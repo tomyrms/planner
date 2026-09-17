@@ -58,7 +58,7 @@ jobs:
             > build/xcodebuild.log 2>&1 || status=$?
           # Pinned versions of the Swift packages, to commit when they change.
           cat Planner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved 2>/dev/null || true
-          grep -E '(error|warning): ' build/xcodebuild.log | sort -u || true
+          grep -E '(error|warning): |Stack dump:|While evaluating request|While emitting IR|Please submit a bug report' build/xcodebuild.log | sort -u || true
           tail -n 3 build/xcodebuild.log
           exit "$status"
 
