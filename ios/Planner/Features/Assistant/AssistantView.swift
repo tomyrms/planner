@@ -511,6 +511,7 @@ private struct TaskLink: View {
                             TaskSubtaskDisclosureButton(taskTitle: task.title, subtasks: task.subtasks, isExpanded: $subtasksExpanded)
                         }
                     }
+                    TaskTagLinks(taskId: task.id).padding(.leading, Spacing.xl)
                     if subtasksExpanded && !task.subtasks.isEmpty {
                         TaskSubtaskList(subtasks: task.subtasks).padding(.leading, Spacing.xl)
                     }

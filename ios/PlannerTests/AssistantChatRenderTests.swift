@@ -28,6 +28,8 @@ final class AssistantChatRenderTests: XCTestCase {
         try attach(TaskSubtasksPreview(expanded: true), name: "11-subtasks-expanded-dark", appearance: .dark)
         try attach(TaskSubtasksPreview(expanded: true), name: "12-subtasks-expanded-accessibility3", typeSize: .accessibility3)
         try attach(AssistantChatPreview(kind: .answer), name: "13-answer-emphasis-light")
+        try attach(TaskTagsPreview(), name: "14-task-tags-light")
+        try attach(TaskTagsPreview(), name: "15-task-tags-dark-accessibility3", appearance: .dark, typeSize: .accessibility3)
     }
 
     @MainActor

@@ -317,6 +317,7 @@ final class AppServices {
     let queue: SyncQueueRepository
     let sync: SyncController
     let directory: ProjectDirectory
+    let tagDirectory = TaskTagDirectory()
     let undo = UndoCenter()
     let assistantHistory: AssistantRepository
     let assistant: AssistantStore
@@ -353,6 +354,7 @@ final class AppServices {
         let lifecycle = UUID()
         serviceLifecycleId = lifecycle
         directory.start(tasks)
+        tagDirectory.start(tasks)
         agenda.start(tasks)
         await reminders.start()
         guard serviceLifecycleId == lifecycle, !isRecoverySuspended, !Task.isCancelled else { return }
@@ -383,6 +385,7 @@ final class AppServices {
         assistant.stopRequests()
         assistant.stop()
         directory.stop()
+        tagDirectory.stop()
         agenda.stop()
         await reminders.stopAndWait()
         await sync.stop()
@@ -400,6 +403,7 @@ final class AppServices {
         assistant.stopRequests()
         assistant.stop()
         directory.stop()
+        tagDirectory.stop()
         agenda.stop()
         await reminders.stopAndWait()
         await api.retire()

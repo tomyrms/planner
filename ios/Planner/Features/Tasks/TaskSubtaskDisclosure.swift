@@ -18,7 +18,7 @@ struct TaskSubtaskDisclosureButton: View {
                     .font(.caption.weight(.semibold))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.secondary)
             .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
             .contentShape(Rectangle())
         }

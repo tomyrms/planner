@@ -5,6 +5,7 @@ enum TaskRowContext {
     case today
     case day
     case list
+    case tag
     case completed
     case trash
 }
@@ -69,6 +70,8 @@ struct TaskRow: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { open(occurrence) }
                 .accessibilityActions { menu(occurrence, withLists: false) }
+            TaskTagLinks(taskId: task.id)
+                .padding(.leading, context == .trash ? 0 : TouchTarget.comfort + Spacing.md)
             if subtasksExpanded && !task.subtasks.isEmpty {
                 TaskSubtaskList(subtasks: task.subtasks)
                     .padding(.leading, context == .trash ? 0 : TouchTarget.comfort + Spacing.md)
@@ -251,7 +254,7 @@ struct TaskRow: View {
             if item.isMoved, let origin = item.originDate {
                 parts.append("déplacée, prévue à l’origine " + DateText.day(origin, today: today))
             }
-            if let recurrence = task.recurrence, context == .list || context == .completed {
+            if let recurrence = task.recurrence, context == .list || context == .tag || context == .completed {
                 parts.append(recurrence.summary.lowercased())
             }
             if task.isRecurring && task.isCompleted { parts.append("série arrêtée") }

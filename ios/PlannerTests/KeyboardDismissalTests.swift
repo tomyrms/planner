@@ -61,8 +61,13 @@ struct KeyboardDismissalTests {
 
         field.hasFocus = true
         field.removeFromSuperview() // A sheet closed before the deferred tap callback.
+        // UIKit itself may resign the responder while removing it from its window.
+        // Keep the probe focused so this specifically exercises the detached-window guard.
+        let resignsAfterRemoval = field.resignCount
+        field.hasFocus = true
         KeyboardDismissalPolicy.dismiss(captured, in: window)
-        #expect(field.resignCount == 1)
+        #expect(field.resignCount == resignsAfterRemoval)
+        #expect(field.hasFocus)
     }
 
     @Test func theInstallerMovesOnlyItsOwnNonBlockingRecognizerBetweenWindows() throws {
@@ -70,23 +75,41 @@ struct KeyboardDismissalTests {
         let second = UIWindow()
         let nativeRecognizer = UITapGestureRecognizer()
         first.addGestureRecognizer(nativeRecognizer)
+        // UIWindow also owns system gestures (including iOS 26's system gesture gates).
+        // Observe their identities instead of assuming that a fresh window is empty.
+        let firstNative = recognizerIDs(in: first)
+        let secondNative = recognizerIDs(in: second)
         let coordinator = KeyboardDismissalCoordinator()
         coordinator.attach(to: first)
-        let installed = try #require(first.gestureRecognizers?.first { $0 !== nativeRecognizer })
+        let ownedRecognizers = first.gestureRecognizers?.filter { $0.delegate === coordinator } ?? []
+        #expect(ownedRecognizers.count == 1)
+        let installed = try #require(ownedRecognizers.first)
         #expect(!installed.cancelsTouchesInView)
         #expect(!installed.delaysTouchesBegan)
         #expect(!installed.delaysTouchesEnded)
         #expect(coordinator.gestureRecognizer(installed, shouldRecognizeSimultaneouslyWith: nativeRecognizer))
         coordinator.attach(to: first)
-        #expect(first.gestureRecognizers?.count == 2)
+        #expect(first.gestureRecognizers?.filter { $0.delegate === coordinator }.count == 1)
+        #expect(firstNative.isSubset(of: recognizerIDs(in: first)))
 
         coordinator.attach(to: second)
-        #expect(first.gestureRecognizers?.count == 1)
-        #expect(first.gestureRecognizers?.first === nativeRecognizer)
-        #expect(second.gestureRecognizers?.count == 1)
+        #expect(firstNative.isSubset(of: recognizerIDs(in: first)))
+        #expect(!recognizerIDs(in: first).contains(ObjectIdentifier(installed)))
+        #expect(installed.view == nil)
+        let movedRecognizers = second.gestureRecognizers?.filter { $0.delegate === coordinator } ?? []
+        #expect(movedRecognizers.count == 1)
+        let moved = try #require(movedRecognizers.first)
+        #expect(moved.view === second)
+        #expect(secondNative.isSubset(of: recognizerIDs(in: second)))
         coordinator.attach(to: nil)
-        #expect(second.gestureRecognizers?.isEmpty ?? true)
-        #expect(first.gestureRecognizers?.first === nativeRecognizer)
+        #expect(moved.view == nil)
+        #expect(second.gestureRecognizers?.contains { $0.delegate === coordinator } != true)
+        #expect(firstNative.isSubset(of: recognizerIDs(in: first)))
+        #expect(secondNative.isSubset(of: recognizerIDs(in: second)))
+    }
+
+    private func recognizerIDs(in window: UIWindow) -> Set<ObjectIdentifier> {
+        Set((window.gestureRecognizers ?? []).map(ObjectIdentifier.init))
     }
 }
 

@@ -18,11 +18,13 @@ L'arrêt simple conserve le vocal dans l'Assistant : **Envoyer** lance son trait
 
 Le chat utilise des bulles neutres pour les demandes, des réponses directement sur le fond et des résultats structurés sans empiler les cartes. Une proposition à confirmer garde une surface distincte. Le champ arrondi et son bouton d'envoi circulaire reprennent les formes et l'accent du + central. Les contrôles d'enregistrement restent dans la capsule globale lorsqu'elle est visible ; le micro du chat possède ses propres contrôles.
 
-Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. La mise en évidence des réponses s'affiche sans exposer les marqueurs Markdown. Le workflow produit l'artifact **assistant-chat-renders** : treize planches SwiftUI du chat et des sous-tâches avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
+Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. La mise en évidence des réponses s'affiche sans exposer les marqueurs Markdown. Le workflow produit l'artifact **assistant-chat-renders** : quinze planches SwiftUI du chat, des sous-tâches et des tags avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
 
-## Sous-tâches et clavier
+## Sous-tâches, tags et clavier
 
 Les tâches avec sous-tâches disposent d'un chevron et d'un compteur discret dans les listes, les recherches, l'agenda du calendrier et les liens de tâches de l'assistant. Le chevron ouvre ou replie les intitulés et leur état ; le titre ouvre toujours l'éditeur, où se modifient et se cochent les sous-tâches.
+
+Les tags se lisent directement sous les tâches. Toucher un tag ouvre ses tâches actives et terminées. La rubrique **Tags** dans Listes donne accès au catalogue avec le nombre de tâches actives, y compris les tags sans tâche ; Réglages > Tags conserve la gestion des noms. Le tout utilise la copie locale et fonctionne hors réseau.
 
 Faire défiler un formulaire ou la recherche ferme le clavier de façon interactive. Un appui dans le fond ferme aussi le champ actif sans perdre son texte. Toucher un autre champ, sélectionner du texte ou activer un contrôle garde son fonctionnement natif ; ce comportement s'applique également aux feuilles de saisie.
 

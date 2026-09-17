@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Listes: Inbox, À venir, the user's lists, Terminées, Corbeille; search covers tasks and lists.
+/// Listes: Inbox, À venir, the user's lists and tags, Terminées, Corbeille.
 struct ListsView: View {
     @Environment(AppServices.self) private var services
     @State private var query = ""
@@ -75,6 +75,28 @@ struct ListsView: View {
                     }
                 }
                 Button("Nouvelle liste", systemImage: "plus") { namingList = true }
+            }
+            Section("Tags") {
+                if services.tagDirectory.failed {
+                    Text("Lecture des tags impossible.").foregroundStyle(.secondary)
+                    Button("Réessayer", systemImage: "arrow.clockwise") {
+                        services.tagDirectory.start(services.tasks)
+                    }
+                    .disabled(services.isRecoverySuspended)
+                } else if !services.tagDirectory.loaded {
+                    ProgressView("Lecture des tags…")
+                } else if services.tagDirectory.snapshot.catalogue.isEmpty {
+                    Text("Aucun tag pour le moment.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(services.tagDirectory.snapshot.catalogue) { summary in
+                        NavigationLink {
+                            TagTasksView(tag: summary.tag)
+                        } label: {
+                            TagCatalogueLabel(name: summary.tag.name, activeCount: summary.activeTaskCount)
+                        }
+                    }
+                }
+                NavigationLink { TagsView() } label: { Label("Gérer les tags", systemImage: "tag") }
             }
             Section {
                 NavigationLink {
