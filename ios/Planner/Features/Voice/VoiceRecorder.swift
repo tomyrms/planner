@@ -135,16 +135,12 @@ final class VoiceRecorder {
     private func watchInterruptions() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                Task { await self?.interrupt() }
-            }
+            Task { @MainActor in await self?.interrupt() }
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             guard reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
-            MainActor.assumeIsolated {
-                Task { await self?.interrupt() }
-            }
+            Task { @MainActor in await self?.interrupt() }
         })
     }
 
