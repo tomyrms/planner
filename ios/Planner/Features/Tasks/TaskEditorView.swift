@@ -41,7 +41,7 @@ struct TaskEditorView: View {
                 Section {
                     TextField("Titre", text: $draft.title, axis: .vertical)
                         .focused($titleFocused)
-                    TextField("Notes", text: $draft.notes, axis: .vertical)
+                    TextField("Description", text: $draft.notes, axis: .vertical)
                         .lineLimit(2...8)
                 }
                 if changedElsewhere {

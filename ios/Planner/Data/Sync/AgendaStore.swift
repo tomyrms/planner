@@ -8,35 +8,54 @@ final class AgendaStore {
     private(set) var occurrences: [String: [OccurrenceRow]] = [:]
     private(set) var reminders: [String: [ReminderRow]] = [:]
     private(set) var loaded = false
+    private(set) var readFailed = false
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    @ObservationIgnored private var observationId: UUID?
 
     func start(_ repository: TaskRepository) {
         stop()
+        let id = UUID()
+        observationId = id
+        loaded = false
+        readFailed = false
         listeners.append(Task { [weak self] in
             do {
                 for try await rows in try repository.observeTasks(.dated) {
+                    guard !Task.isCancelled, self?.observationId == id else { return }
                     self?.tasks = rows
                     self?.loaded = true
                 }
-            } catch {}
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError), self?.observationId == id else { return }
+                self?.readFailed = true
+            }
         })
         listeners.append(Task { [weak self] in
             do {
                 for try await rows in try repository.observeOccurrences() {
+                    guard !Task.isCancelled, self?.observationId == id else { return }
                     self?.occurrences = Dictionary(grouping: rows, by: \.taskId)
                 }
-            } catch {}
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError), self?.observationId == id else { return }
+                self?.readFailed = true
+            }
         })
         listeners.append(Task { [weak self] in
             do {
                 for try await rows in try repository.observeReminders() {
+                    guard !Task.isCancelled, self?.observationId == id else { return }
                     self?.reminders = Dictionary(grouping: rows, by: \.taskId)
                 }
-            } catch {}
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError), self?.observationId == id else { return }
+                self?.readFailed = true
+            }
         })
     }
 
     func stop() {
+        observationId = nil
         for listener in listeners { listener.cancel() }
         listeners.removeAll()
     }

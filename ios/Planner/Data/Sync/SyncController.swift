@@ -17,6 +17,7 @@ final class SyncController {
         connector = SyncConnector(api: api, database: db, events: continuation)
         listeners.append(Task { [weak self] in
             for await block in stream {
+                guard !Task.isCancelled else { return }
                 self?.apply(block)
             }
         })
@@ -60,8 +61,10 @@ final class SyncController {
     }
 
     func stop() async {
-        for listener in listeners { listener.cancel() }
+        let stopping = listeners
+        for listener in stopping { listener.cancel() }
         listeners.removeAll()
+        for listener in stopping { await listener.value }
         disconnection?.cancel()
         disconnection = nil
         try? await db.disconnect()
@@ -72,8 +75,10 @@ final class SyncController {
         let reason: SyncBlock = block ?? .pairingRequired
         try await connector.requireRecovery(reason)
         block = reason
-        for listener in listeners { listener.cancel() }
+        let stopping = listeners
+        for listener in stopping { listener.cancel() }
         listeners.removeAll()
+        for listener in stopping { await listener.value }
         await disconnection?.value
         disconnection = nil
         try await db.disconnect()
@@ -131,6 +136,7 @@ final class SyncController {
                     guard let current = generations.first,
                           let seen = try await LocalMeta.serverGeneration(in: db),
                           current.caseInsensitiveCompare(seen) != .orderedSame else { continue }
+                    try Task.checkCancellation()
                     guard let self else { return }
                     try await self.connector.requireRecovery(.generationChanged(current))
                 }

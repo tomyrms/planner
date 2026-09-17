@@ -46,6 +46,11 @@ nonisolated struct TaskRepository: Sendable {
 
     private static func query(for filter: TaskFilter) -> (String, [Sendable?]) {
         switch filter {
+        case .allActive:
+            ("""
+            deleted_at IS NULL AND status = 'active'
+            ORDER BY scheduled_date IS NULL, scheduled_date, scheduled_time IS NULL, scheduled_time, created_at DESC, id
+            """, [])
         case .inbox:
             ("deleted_at IS NULL AND status = 'active' AND project_id IS NULL ORDER BY created_at DESC", [])
         case .project(let id):

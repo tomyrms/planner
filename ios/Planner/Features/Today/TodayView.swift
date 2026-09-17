@@ -3,6 +3,7 @@ import SwiftUI
 /// Today (02_Design/05_Calendar_Task_UX.md): commitments, to do, deadlines, then what to replan.
 /// Series appear through their occurrences of the day and their missed occurrences.
 struct TodayView: View {
+    var embedded = false
     @Environment(AppServices.self) private var services
     @Environment(\.scenePhase) private var scenePhase
     @State private var today = CivilDate.today()
@@ -11,43 +12,62 @@ struct TodayView: View {
     @State private var showOverdue = true
 
     var body: some View {
+        if embedded {
+            VStack(spacing: 0) {
+                Text(DateText.heading(today))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.bottom, Spacing.xs)
+                    .accessibilityAddTraits(.isHeader)
+                content
+            }
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    private var content: some View {
         let agenda = services.agenda.today(today)
-        NavigationStack {
-            List {
-                SyncNotice()
-                if let summary = agenda.summary {
-                    Section {
-                        Text(summary)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                rows("Engagements", agenda.commitments)
-                rows("À faire aujourd’hui", agenda.todo)
-                rows("Échéances", agenda.deadlines)
-                collapsible("À replanifier", agenda.toReplan, isExpanded: $showReplan)
-                collapsible("Échéance dépassée", agenda.overdue, isExpanded: $showOverdue)
-            }
-            .overlay {
-                if services.agenda.loaded && agenda.isEmpty {
-                    ContentUnavailableView {
-                        Label("Rien de prévu aujourd’hui.", systemImage: "sun.max")
-                    } actions: {
-                        Button("Ajouter une tâche") { creating = true }
-                    }
+        return List {
+            SyncNotice()
+            if let summary = agenda.summary {
+                Section {
+                    Text(summary)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle(DateText.heading(today))
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Ajouter une tâche", systemImage: "plus") { creating = true }
+            rows("Engagements", agenda.commitments)
+            rows("À faire aujourd’hui", agenda.todo)
+            rows("Échéances", agenda.deadlines)
+            collapsible("À replanifier", agenda.toReplan, isExpanded: $showReplan)
+            collapsible("Échéance dépassée", agenda.overdue, isExpanded: $showOverdue)
+        }
+        .overlay {
+            if services.agenda.readFailed {
+                AgendaReadFailureView()
+            } else if !services.agenda.loaded {
+                ProgressView("Lecture des tâches…")
+            } else if agenda.isEmpty && (!embedded || (services.sync.hasSynced == true && services.sync.block == nil)) {
+                ContentUnavailableView {
+                    Label("Rien de prévu aujourd’hui.", systemImage: "sun.max")
+                } actions: {
+                    Button("Ajouter une tâche") { creating = true }
                 }
             }
-            .sheet(isPresented: $creating) {
-                TaskEditorView(mode: .create(projectId: nil, schedule: TimeValue(date: today)))
+        }
+        .navigationTitle(embedded ? "Mes tâches" : DateText.heading(today))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Ajouter une tâche", systemImage: "plus") { creating = true }
             }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { today = .today() }
-            }
+        }
+        .sheet(isPresented: $creating) {
+            TaskEditorView(mode: .create(projectId: nil, schedule: TimeValue(date: today)))
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { today = .today() }
         }
     }
 
@@ -76,6 +96,21 @@ struct TodayView: View {
                         .font(.headline)
                 }
             }
+        }
+    }
+}
+
+/// Shared read failure for the agenda projections; retry restarts only the local observers.
+struct AgendaReadFailureView: View {
+    @Environment(AppServices.self) private var services
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Lecture impossible", systemImage: "exclamationmark.triangle")
+        } description: {
+            Text("Les tâches n’ont pas pu être lues sur cet iPhone.")
+        } actions: {
+            Button("Réessayer") { services.agenda.start(services.tasks) }
         }
     }
 }

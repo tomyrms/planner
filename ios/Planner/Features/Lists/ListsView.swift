@@ -105,13 +105,22 @@ struct TaskListScreen: View {
     let filter: TaskFilter
     let context: TaskRowContext
     var projectId: String?
+    var embedded = false
     @Environment(AppServices.self) private var services
     @State private var tasks: [TaskItem] = []
     @State private var loaded = false
     @State private var creating = false
+    @State private var readFailed = false
+    @State private var retryId = UUID()
+
+    private struct ObservationKey: Hashable {
+        let filter: TaskFilter
+        let retryId: UUID
+    }
 
     var body: some View {
         List {
+            if embedded { SyncNotice() }
             ForEach(tasks) { task in
                 TaskRow(task: task, context: context)
             }
@@ -124,11 +133,21 @@ struct TaskListScreen: View {
             }
         }
         .overlay {
-            if loaded && tasks.isEmpty {
+            if readFailed {
+                ContentUnavailableView {
+                    Label("Lecture impossible", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("Les tâches n’ont pas pu être lues sur cet iPhone.")
+                } actions: {
+                    Button("Réessayer") { retryId = UUID() }
+                }
+            } else if !loaded {
+                ProgressView("Lecture des tâches…")
+            } else if tasks.isEmpty && (!embedded || (services.sync.hasSynced == true && services.sync.block == nil)) {
                 ContentUnavailableView(emptyTitle, systemImage: emptySymbol)
             }
         }
-        .navigationTitle(title)
+        .navigationTitle(embedded ? "Mes tâches" : title)
         .toolbar {
             if context == .list {
                 ToolbarItem(placement: .primaryAction) {
@@ -139,11 +158,12 @@ struct TaskListScreen: View {
         .sheet(isPresented: $creating) {
             TaskEditorView(mode: .create(projectId: projectId, schedule: nil))
         }
-        .task(id: filter) { await observe() }
+        .task(id: ObservationKey(filter: filter, retryId: retryId)) { await observe() }
     }
 
     private var emptyTitle: String {
         switch filter {
+        case .allActive: "Aucune tâche active."
         case .inbox: "Inbox vide."
         case .completed: "Aucune tâche terminée."
         case .trash: "Corbeille vide."
@@ -161,12 +181,18 @@ struct TaskListScreen: View {
     }
 
     private func observe() async {
+        loaded = false
+        readFailed = false
         do {
             for try await rows in try services.tasks.observeTasks(filter) {
+                try Task.checkCancellation()
                 tasks = rows
                 loaded = true
             }
+        } catch is CancellationError {
         } catch {
+            guard !Task.isCancelled else { return }
+            readFailed = true
             loaded = true
         }
     }
@@ -174,11 +200,15 @@ struct TaskListScreen: View {
 
 /// À venir: the next 14 days grouped by date, computed occurrences included, then later.
 struct UpcomingView: View {
+    var embedded = false
     @Environment(AppServices.self) private var services
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var today = CivilDate.today()
 
     var body: some View {
-        let agenda = services.agenda.upcoming(.today())
+        let agenda = services.agenda.upcoming(today)
         List {
+            if embedded { SyncNotice() }
             ForEach(agenda.days) { day in
                 Section(DateText.heading(day.date)) {
                     ForEach(day.agenda.all) { item in
@@ -195,11 +225,18 @@ struct UpcomingView: View {
             }
         }
         .overlay {
-            if services.agenda.loaded && agenda.isEmpty {
+            if services.agenda.readFailed {
+                AgendaReadFailureView()
+            } else if !services.agenda.loaded {
+                ProgressView("Lecture des tâches…")
+            } else if agenda.isEmpty && (!embedded || (services.sync.hasSynced == true && services.sync.block == nil)) {
                 ContentUnavailableView("Rien de prévu ces prochains jours.", systemImage: "calendar")
             }
         }
-        .navigationTitle("À venir")
+        .navigationTitle(embedded ? "Mes tâches" : "À venir")
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { today = .today() }
+        }
     }
 }
 

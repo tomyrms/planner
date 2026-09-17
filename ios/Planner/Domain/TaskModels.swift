@@ -68,6 +68,8 @@ nonisolated struct ProjectItem: Identifiable, Hashable, Sendable {
 
 /// Which tasks a screen observes.
 nonisolated enum TaskFilter: Hashable, Sendable {
+    /// All active tasks and running series; completed/deleted tasks have their own destinations.
+    case allActive
     case inbox
     case project(String)
     /// Active tasks with a planned or due date, series included (Today, Upcoming, Calendar).

@@ -18,8 +18,8 @@ struct MainTabView: View {
     var body: some View {
         @Bindable var navigator = services.navigator
         TabView(selection: Binding(get: { selection }, set: { destination in select(destination) })) {
-            Tab("Aujourd’hui", systemImage: "sun.max", value: Destination.today) {
-                TodayView()
+            Tab("Mes tâches", systemImage: "checklist", value: Destination.today) {
+                TasksHomeView()
                     .toolbarVisibility(.hidden, for: .tabBar)
             }
             Tab("Calendrier", systemImage: "calendar", value: Destination.calendar) {
@@ -64,7 +64,7 @@ struct MainTabView: View {
 
     private var bottomBar: some View {
         HStack(alignment: .center, spacing: 0) {
-            destination(.today, title: "Aujourd’hui", symbol: "sun.max")
+            destination(.today, title: "Mes tâches", symbol: "checklist")
             destination(.calendar, title: "Calendrier", symbol: "calendar")
             QuickCaptureAccessory(panelWidth: max(240, barWidth - 16),
                                   onAddTask: { addingTask = true },
