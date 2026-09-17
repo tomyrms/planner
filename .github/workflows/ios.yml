@@ -70,6 +70,7 @@ jobs:
           xcodebuild test \
             -project Planner.xcodeproj -scheme Planner -configuration Debug \
             -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 17' -derivedDataPath build/DerivedDataTests \
+            -parallel-testing-enabled NO \
             -resultBundlePath build/PlannerTests.xcresult \
             -skipPackagePluginValidation -skipMacroValidation \
             > build/xcodebuild-test.log 2>&1 || status=$?
@@ -81,19 +82,29 @@ jobs:
           exit "$status"
 
       - name: Export synthetic chat renders
-        if: always() && steps.simulator_tests.outcome != 'skipped'
+        id: chat_renders
+        if: ${{ !cancelled() && (steps.simulator_tests.outcome == 'success' || steps.simulator_tests.outcome == 'failure') }}
         working-directory: ios
+        env:
+          TEST_OUTCOME: ${{ steps.simulator_tests.outcome }}
         run: |
-          xcrun xcresulttool export attachments \
-            --path build/PlannerTests.xcresult \
-            --output-path build/assistant-chat-renders
-          if [ -z "$(find build/assistant-chat-renders -type f -iname '*.png' -print -quit)" ]; then
-            echo 'No chat PNG was produced. Inspect the simulator test result.' >&2
+          # Cancellation can leave only Data/Staging, with no finalized Info.plist. Such a bundle
+          # is kept for diagnostics, but cannot be exported by xcresulttool.
+          if [ -f build/PlannerTests.xcresult/Info.plist ] && \
+            xcrun xcresulttool export attachments \
+              --path build/PlannerTests.xcresult \
+              --output-path build/assistant-chat-renders && \
+            [ -n "$(find build/assistant-chat-renders -type f -iname '*.png' -print -quit)" ]; then
+            echo 'produced=true' >> "$GITHUB_OUTPUT"
+          elif [ "$TEST_OUTCOME" = success ]; then
+            echo 'Tests passed but no review PNG could be exported. Inspect the test result.' >&2
             exit 1
+          else
+            echo 'No review PNG is available from the failed test run; keeping its diagnostics.'
           fi
 
       - name: Keep synthetic chat renders for visual review
-        if: always() && steps.simulator_tests.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.chat_renders.outputs.produced == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: assistant-chat-renders

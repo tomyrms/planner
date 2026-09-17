@@ -18,7 +18,7 @@ L'arrêt simple conserve le vocal dans l'Assistant : **Envoyer** lance son trait
 
 Le chat utilise des bulles neutres pour les demandes, des réponses directement sur le fond et des résultats structurés sans empiler les cartes. Une proposition à confirmer garde une surface distincte. Le champ arrondi et son bouton d'envoi circulaire reprennent les formes et l'accent du + central. Les contrôles d'enregistrement restent dans la capsule globale lorsqu'elle est visible ; le micro du chat possède ses propres contrôles.
 
-Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. Le workflow produit l'artifact **assistant-chat-renders** : douze planches SwiftUI du chat et des sous-tâches avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
+Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. La mise en évidence des réponses s'affiche sans exposer les marqueurs Markdown. Le workflow produit l'artifact **assistant-chat-renders** : treize planches SwiftUI du chat et des sous-tâches avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
 
 ## Sous-tâches et clavier
 

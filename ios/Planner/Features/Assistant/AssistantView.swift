@@ -219,6 +219,8 @@ private struct MessageView: View {
         ChatReplyGroup(style: replyStyle, heading: receipt?.summary ?? heading) {
             if let receipt {
                 ReceiptBody(layout: receipt)
+            } else if message.kind == "text" {
+                ChatAssistantText(text: message.text)
             } else {
                 Text(message.text)
                     .lineSpacing(3)

@@ -1,6 +1,19 @@
 import Foundation
 import SwiftUI
 
+/// Natural language replies may include emphasis. Keep line breaks; receipts and user-entered
+/// task names retain their separate, literal presentation paths.
+struct ChatAssistantText: View {
+    let text: String
+
+    var body: some View {
+        Text((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+}
+
 /// Presentation only: these components can be previewed without a database, pairing or network.
 struct ChatUserBubble: View {
     let text: String
@@ -298,7 +311,7 @@ struct ChatVoiceDraftContent<Actions: View>: View {
 /// Static, anonymous render fixtures of the real content components. The field is a Text stand-in:
 /// ImageRenderer cannot validate native text input, keyboard safe areas, focus or system navigation.
 struct AssistantChatPreview: View {
-    enum Kind: Equatable { case empty, result, proposal, recovery, voice }
+    enum Kind: Equatable { case empty, result, proposal, recovery, voice, answer }
     let kind: Kind
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -385,6 +398,11 @@ struct AssistantChatPreview: View {
                 Button("À 14 h", action: {}).frame(minHeight: 44)
                 Divider()
                 Button("À 16 h", action: {}).frame(minHeight: 44)
+            }
+        case .answer:
+            ChatUserBubble(text: "Quelles tâches sont prévues aujourd’hui ?")
+            ChatReplyGroup(style: .text) {
+                ChatAssistantText(text: "Voici les tâches prévues aujourd’hui :\n\n• **Préparer le cours** — à 17 h\n• **Appeler le garage** — sans heure\n\nTu peux ouvrir chaque tâche pour voir ses détails.")
             }
         }
     }
