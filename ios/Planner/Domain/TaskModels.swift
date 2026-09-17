@@ -36,6 +36,7 @@ nonisolated struct TaskItem: Identifiable, Hashable, Sendable {
     var deletedAt: Date?
     var revision: Int
     var createdAt: Date?
+    var subtasks: [TaskSubtask] = []
 
     var isDeleted: Bool { deletedAt != nil }
     var isRecurring: Bool { recurrence != nil }
@@ -93,10 +94,13 @@ nonisolated struct TaskDraft: Equatable, Sendable {
     /// The single reminder of the V1 editor, and its identifier once saved.
     var reminder: ReminderRule?
     var reminderId: String?
+    var subtasks: [TaskSubtask] = []
+    var tagIds: Set<String> = []
+    var sourceRevision = 0
 
     init() {}
 
-    init(task: TaskItem, reminder: ReminderRow? = nil) {
+    init(task: TaskItem, reminder: ReminderRow? = nil, tagIds: Set<String> = []) {
         self.reminder = reminder?.rule
         reminderId = reminder?.id
         title = task.title
@@ -107,15 +111,22 @@ nonisolated struct TaskDraft: Equatable, Sendable {
         deadline = task.deadline
         durationMinutes = task.durationMinutes
         recurrence = task.recurrence
+        subtasks = task.subtasks
+        self.tagIds = tagIds
+        sourceRevision = task.revision
     }
 
     /// A series needs a planned date and has no deadline in V1.
     var isValidSeries: Bool {
-        recurrence == nil || (schedule != nil && deadline == nil)
+        recurrence == nil || (schedule != nil && deadline == nil && subtasks.isEmpty)
     }
 
     var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var isValid: Bool { !trimmedTitle.isEmpty && trimmedTitle.count <= 500 && notes.count <= 10_000 }
+    var isValid: Bool {
+        !trimmedTitle.isEmpty && trimmedTitle.count <= 500 && notes.count <= 10_000
+            && TaskSubtask.areValid(subtasks)
+            && tagIds.allSatisfy { UUID(uuidString: $0) != nil }
+    }
 
     /// `set` of a `task.patch`: only the fields that differ from `base`; `null` clears a field.
     func changes(from base: TaskDraft) -> [String: JSONPayload] {

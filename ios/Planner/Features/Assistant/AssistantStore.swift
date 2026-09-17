@@ -337,6 +337,10 @@ final class AssistantStore: VoiceAssistant {
         } catch let error as APIError {
             guard !Task.isCancelled, !requestsStopped else { return }
             handleSubmissionFailure(error, for: turn)
+        } catch is AssistantSettingsPendingError {
+            guard !Task.isCancelled, !requestsStopped else { return }
+            phase = .refused
+            notice = AssistantSettingsPendingError.message
         } catch {
             guard !Task.isCancelled, !requestsStopped else { return }
             phase = .unknown
@@ -590,7 +594,8 @@ final class AssistantStore: VoiceAssistant {
     }
 
     static func failureText(_ error: any Error) -> String {
-        switch error as? APIError {
+        if error is AssistantSettingsPendingError { return AssistantSettingsPendingError.message }
+        return switch error as? APIError {
         case .transport: "Pas de réseau : réessayez quand la connexion revient."
         case .unauthorized: "Cet iPhone n’est plus autorisé : voir Réglages."
         case .http(let status, let code, _, _, _, _): "Action refusée (\(code ?? "HTTP \(status)"))."

@@ -185,6 +185,7 @@ nonisolated extension TaskRepository {
 
     /// "Toute la série": rule and task template in one `series.update` (revision precondition required).
     func updateSeries(_ task: TaskItem, from base: TaskDraft, to draft: TaskDraft, reapplying fields: Set<String> = []) async throws {
+        try Self.validateDetails(draft)
         var set = Self.patch(from: base, to: draft, reapplying: fields)
         set.removeValue(forKey: "deadline") // Series have no deadline and cannot clear their anchor.
         if draft.schedule == nil { set.removeValue(forKey: "schedule") }
@@ -192,7 +193,7 @@ nonisolated extension TaskRepository {
         if !set.isEmpty { payload["set"] = .object(set) }
         if draft.recurrence != base.recurrence, let recurrence = draft.recurrence { payload["recurrence"] = recurrence.payload }
         let reminderChanged = draft.reminder != base.reminder
-        guard !payload.isEmpty || reminderChanged else { return }
+        guard !payload.isEmpty || reminderChanged || draft.tagIds != base.tagIds else { return }
         let now = Timestamp.format(Date())
         let schedule = draft.schedule
         let recurrenceText = try draft.recurrence?.payload.encodedText()
@@ -219,6 +220,7 @@ nonisolated extension TaskRepository {
             if reminderChanged {
                 try Self.writeReminder(task: task.id, existingId: base.reminderId, rule: draft.reminder, schedule: schedule, deadline: nil, in: tx)
             }
+            try Self.writeDetails(taskId: task.id, from: base, to: draft, in: tx)
         }
     }
 

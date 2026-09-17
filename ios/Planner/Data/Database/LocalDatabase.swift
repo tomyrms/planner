@@ -12,7 +12,7 @@ nonisolated enum LocalDatabase {
             .integer("revision"), .text("created_at"), .text("updated_at"),
         ]),
         Table(name: "tasks", columns: [
-            .text("project_id"), .text("title"), .text("notes"), .text("priority"), .text("status"), .text("completed_at"),
+            .text("project_id"), .text("title"), .text("notes"), .text("subtasks"), .text("priority"), .text("status"), .text("completed_at"),
             .text("scheduled_date"), .text("scheduled_time"), .text("scheduled_time_zone"), .text("scheduled_start_at"),
             .integer("duration_minutes"),
             .text("deadline_date"), .text("deadline_time"), .text("deadline_time_zone"), .text("deadline_at"),
@@ -22,6 +22,15 @@ nonisolated enum LocalDatabase {
             Index.ascending(name: "project", column: "project_id"),
             Index.ascending(name: "scheduled", column: "scheduled_date"),
             Index.ascending(name: "deadline", column: "deadline_date"),
+        ]),
+        Table(name: "tags", columns: [
+            .text("name"), .text("normalized_name"), .text("deleted_at"), .integer("revision"), .text("created_at"), .text("updated_at"),
+        ]),
+        Table(name: "task_tags", columns: [
+            .text("task_id"), .text("tag_id"), .text("deleted_at"), .text("created_at"), .text("updated_at"),
+        ], indexes: [Index.ascending(name: "task", column: "task_id"), Index.ascending(name: "tag", column: "tag_id")]),
+        Table(name: "user_settings", columns: [
+            .integer("auto_tags"), .integer("revision"), .text("created_at"), .text("updated_at"),
         ]),
         Table(name: "task_occurrences", columns: [
             .text("task_id"), .text("occurrence_key"), .text("status"), .text("completed_at"),
@@ -227,7 +236,7 @@ nonisolated extension TaskItem {
     static let selectColumns = """
         id, project_id, title, notes, priority, status, completed_at, scheduled_date, scheduled_time, scheduled_time_zone,
         duration_minutes, deadline_date, deadline_time, deadline_time_zone, recurrence, missed_ignored_before,
-        deleted_at, revision, created_at
+        deleted_at, revision, created_at, subtasks
         """
 
     init(row: any SqlCursor) throws {
@@ -254,7 +263,10 @@ nonisolated extension TaskItem {
             missedIgnoredBefore: CivilDate(try row.getStringOptional(name: "missed_ignored_before")),
             deletedAt: Timestamp.parse(try row.getStringOptional(name: "deleted_at")),
             revision: try row.getIntOptional(name: "revision") ?? 0,
-            createdAt: Timestamp.parse(try row.getStringOptional(name: "created_at"))
+            createdAt: Timestamp.parse(try row.getStringOptional(name: "created_at")),
+            subtasks: try row.getStringOptional(name: "subtasks").map {
+                try JSONDecoder().decode([TaskSubtask].self, from: Data($0.utf8))
+            } ?? []
         )
     }
 }

@@ -62,6 +62,11 @@ nonisolated struct SyncRejectionIntent: Sendable {
             "task.create": "Création d’une tâche", "task.patch": "Modification d’une tâche",
             "task.complete": "Tâche terminée", "task.reopen": "Tâche rouverte",
             "task.delete": "Suppression d’une tâche", "task.restore": "Restauration d’une tâche",
+            "task.subtask.add": "Ajout d’une sous-tâche", "task.subtask.patch": "Modification d’une sous-tâche",
+            "task.subtask.remove": "Retrait d’une sous-tâche", "task.tag.add": "Ajout d’un tag à la tâche",
+            "task.tag.remove": "Retrait d’un tag de la tâche", "tag.create": "Création d’un tag",
+            "tag.patch": "Modification d’un tag", "tag.delete": "Suppression d’un tag", "tag.restore": "Restauration d’un tag",
+            "settings.patch": "Modification des paramètres de l’assistant",
             "occurrence.complete": "Occurrence terminée", "occurrence.skip": "Occurrence ignorée",
             "occurrence.reopen": "Occurrence rouverte", "occurrence.reschedule": "Déplacement d’une occurrence",
             "occurrence.skip_missed_before": "Occurrences manquées ignorées",
@@ -99,7 +104,7 @@ nonisolated struct SyncRejectionIntent: Sendable {
         }
         let allowed: Set<String> = ["title", "notes", "priority", "projectId", "schedule", "deadline", "durationMinutes"]
         for (key, value) in values {
-            guard allowed.contains(key) || (type == "task.create" && ["recurrence", "reminders"].contains(key)) else {
+            guard allowed.contains(key) || (type == "task.create" && ["recurrence", "reminders", "subtasks", "tagIds"].contains(key)) else {
                 throw PreparationError.invalidField(Self.name(key))
             }
             switch key {
@@ -130,11 +135,46 @@ nonisolated struct SyncRejectionIntent: Sendable {
                     draft.reminder = try Self.reminder(value)
                 }
                 draft.reminderId = nil // create() generates a new identifier for the new reminder.
+            case "subtasks":
+                guard case .array(let rows) = value, rows.count <= 50 else { throw PreparationError.invalidField(Self.name(key)) }
+                var sourceIds: Set<String> = []
+                draft.subtasks = try rows.enumerated().map { index, row in
+                    guard case .object(let fields) = row,
+                          Set(fields.keys).isSubset(of: ["id", "title", "isCompleted", "sortOrder"]),
+                          case .string(let id) = fields["id"], UUID(uuidString: id) != nil,
+                          sourceIds.insert(id.lowercased()).inserted,
+                          case .string(let title) = fields["title"] else { throw PreparationError.invalidField(Self.name(key)) }
+                    let completed: Bool
+                    if let value = fields["isCompleted"] {
+                        guard case .bool(let flag) = value else { throw PreparationError.invalidField(Self.name(key)) }
+                        completed = flag
+                    } else { completed = false }
+                    let order: Double
+                    switch fields["sortOrder"] {
+                    case .int(let value): order = Double(value)
+                    case .double(let value): order = value
+                    case nil: order = Double(index)
+                    default: throw PreparationError.invalidField(Self.name(key))
+                    }
+                    // This is a new task; subtask identities are recreated along with its task identity.
+                    return TaskSubtask(title: title, isCompleted: completed, sortOrder: order)
+                }
+                guard TaskSubtask.areValid(draft.subtasks) else { throw PreparationError.invalidField(Self.name(key)) }
+            case "tagIds":
+                guard case .array(let values) = value, values.count <= 10 else { throw PreparationError.invalidField(Self.name(key)) }
+                let ids = try values.map { value in
+                    let id = try Self.string(value, key: key)
+                    guard UUID(uuidString: id) != nil else { throw PreparationError.invalidField(Self.name(key)) }
+                    return id.lowercased()
+                }
+                guard Set(ids).count == ids.count else { throw PreparationError.invalidField(Self.name(key)) }
+                draft.tagIds = Set(ids)
             default: break
             }
         }
         if draft.recurrence != nil, draft.deadline != nil { throw PreparationError.invalidField("Échéance d’une tâche répétée") }
         if draft.recurrence != nil, draft.schedule == nil { throw PreparationError.invalidField("Planification d’une tâche répétée") }
+        if draft.recurrence != nil, !draft.subtasks.isEmpty { throw PreparationError.invalidField("Sous-tâches d’une tâche répétée") }
         return draft
     }
 
@@ -233,7 +273,9 @@ nonisolated struct SyncRejectionIntent: Sendable {
 
     private static func name(_ key: String) -> String {
         let names = [
-            "title": "Titre", "notes": "Notes", "priority": "Priorité", "projectId": "Liste (identifiant)",
+            "title": "Titre", "notes": "Description", "priority": "Priorité", "projectId": "Liste (identifiant)",
+            "subtasks": "Sous-tâches", "subtask": "Sous-tâche", "subtaskId": "Sous-tâche (identifiant)",
+            "isCompleted": "Terminée", "tagIds": "Tags (identifiants)", "tagId": "Tag (identifiant)", "autoTags": "Tags automatiques",
             "schedule": "Planification", "deadline": "Échéance", "durationMinutes": "Durée en minutes",
             "recurrence": "Répétition", "reminders": "Rappels", "rule": "Règle du rappel", "id": "Identifiant",
             "occurrenceKey": "Occurrence", "actionLocalDate": "Date de l’action", "name": "Nom",

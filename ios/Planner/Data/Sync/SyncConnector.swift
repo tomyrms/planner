@@ -22,6 +22,10 @@ nonisolated struct SyncDeferredError: Error {
     let until: Date
 }
 
+nonisolated struct AssistantSettingsPendingError: Error, Sendable {
+    static let message = "Le réglage de l’assistant attend la synchronisation. Réessayez dès qu’elle est terminée ; votre message est conservé."
+}
+
 /// One command read back from the insert-only `outbox` table.
 nonisolated struct QueuedCommand: Sendable {
     let id: String
@@ -129,10 +133,25 @@ actor SyncConnector: PowerSyncBackendConnectorProtocol {
     /// Remote assistant actions must also honor the identity/generation barrier. The sync-token
     /// read is outside the assistant API, so it cannot recurse into its own validation callback.
     func installOnlineActionGuard() async {
-        await api.setOnlineActionValidator { [weak self] in
+        await api.setOnlineActionValidator { [weak self] path in
             guard let self else { throw CancellationError() }
             try await self.verifyOnlineIdentity()
+            if path == "api/v1/assistant/turns" || (path.hasPrefix("api/v1/assistant/proposals/") && path.hasSuffix("/confirm")) {
+                try await self.verifyAssistantSettingsSynced()
+            }
         }
+    }
+
+    private func verifyAssistantSettingsSynced() async throws {
+        let pending = try await database.get(
+            sql: """
+            SELECT count(*) FROM ps_crud
+            WHERE json_extract(data, '$.type') = 'outbox'
+              AND json_extract(data, '$.data.type') = 'settings.patch'
+            """, parameters: []
+        ) { try $0.getInt(index: 0) }
+        // This transient guard must not disconnect sync: it needs to upload this preference.
+        if pending > 0 { throw AssistantSettingsPendingError() }
     }
 
     func verifyOnlineIdentity() async throws {
@@ -170,45 +189,55 @@ actor SyncConnector: PowerSyncBackendConnectorProtocol {
                 try await requireRecovery(.generationChanged(nil))
                 throw SyncBlockedError(block: .generationChanged(nil))
             }
-            let envelope: JSONPayload = [
-                "envelopeVersion": 1,
-                "serverGeneration": .string(generation),
-                "commands": .array(commands.map(\.json)),
-            ]
-            let response: MutationsResponse
-            do {
-                response = try await api.uploadMutations(Data(try envelope.encodedText().utf8))
-            } catch let error as APIError {
-                if error == .unauthorized(code: "SESSION_REPLACED") { throw CancellationError() }
-                if case .unauthorized = error { try await requireRecovery(.pairingRequired) }
-                if case .http(409, .some("SERVER_GENERATION_CHANGED"), _, let generation, _, _) = error {
-                    try await requireRecovery(.generationChanged(generation))
-                }
-                throw handle(error)
+            // A full checklist edit can exceed the HTTP envelope's 100-command limit. Keep one
+            // atomic local transaction, and replay the same IDs if a later batch fails.
+            for start in stride(from: 0, to: commands.count, by: 100) {
+                try await checkRecoveryBlock()
+                let batch = Array(commands[start..<min(start + 100, commands.count)])
+                try await uploadBatch(batch, generation: generation, in: database)
             }
-            guard response.serverGeneration.caseInsensitiveCompare(generation) == .orderedSame else {
-                try await requireRecovery(.generationChanged(response.serverGeneration))
-                throw SyncBlockedError(block: .generationChanged(response.serverGeneration))
-            }
-            // An incomplete or unknown receipt never acknowledges the local intent.
-            let expected = Set(commands.map { $0.id.lowercased() })
-            let received = Set(response.results.map { $0.clientCommandId.lowercased() })
-            guard response.results.count == commands.count, expected == received,
-                  response.results.allSatisfy({ result in
-                      switch result.outcome {
-                      case "applied", "rejected": true
-                      case "duplicate": result.original.map { ["applied", "rejected"].contains($0.outcome) } ?? false
-                      default: false
-                      }
-                  }) else { throw handle(.invalidResponse) }
-            failures = 0
-            notBefore = nil
-            try await checkRecoveryBlock()
-            try await record(response, commands: commands, in: database)
         }
         // Acknowledged is not applied: rejections stay in sync_rejections until the user handles them.
         try await checkRecoveryBlock()
         try await transaction.complete()
+    }
+
+    private func uploadBatch(_ commands: [QueuedCommand], generation: String, in database: any PowerSyncDatabaseProtocol) async throws {
+        let envelope: JSONPayload = [
+            "envelopeVersion": 1,
+            "serverGeneration": .string(generation),
+            "commands": .array(commands.map(\.json)),
+        ]
+        let response: MutationsResponse
+        do {
+            response = try await api.uploadMutations(Data(try envelope.encodedText().utf8))
+        } catch let error as APIError {
+            if error == .unauthorized(code: "SESSION_REPLACED") { throw CancellationError() }
+            if case .unauthorized = error { try await requireRecovery(.pairingRequired) }
+            if case .http(409, .some("SERVER_GENERATION_CHANGED"), _, let generation, _, _) = error {
+                try await requireRecovery(.generationChanged(generation))
+            }
+            throw handle(error)
+        }
+        guard response.serverGeneration.caseInsensitiveCompare(generation) == .orderedSame else {
+            try await requireRecovery(.generationChanged(response.serverGeneration))
+            throw SyncBlockedError(block: .generationChanged(response.serverGeneration))
+        }
+        // An incomplete or unknown receipt never acknowledges the local intent.
+        let expected = Set(commands.map { $0.id.lowercased() })
+        let received = Set(response.results.map { $0.clientCommandId.lowercased() })
+        guard response.results.count == commands.count, expected == received,
+              response.results.allSatisfy({ result in
+                  switch result.outcome {
+                  case "applied", "rejected": true
+                  case "duplicate": result.original.map { ["applied", "rejected"].contains($0.outcome) } ?? false
+                  default: false
+                  }
+              }) else { throw handle(.invalidResponse) }
+        failures = 0
+        notBefore = nil
+        try await checkRecoveryBlock()
+        try await record(response, commands: commands, in: database)
     }
 
     /// "Réessayer" in Settings, or a new app version.

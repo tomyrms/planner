@@ -318,6 +318,90 @@ struct SyncRecoveryBoundaryTests {
         }
     }
 
+    @Test(arguments: ["api/v1/assistant/turns", "api/v1/assistant/proposals/test/confirm"])
+    func aPendingAssistantSettingStopsCreationAndConfirmationUntilItsReceipt(_ path: String) async throws {
+        try await withFixture(seedQueue: false) { fixture in
+            try fixture.replySync()
+            let command = LocalCommand(type: "settings.patch", aggregateType: "settings", aggregateId: fixture.userId,
+                                       chaining: .never, payload: ["set": ["autoTags": false]])
+            try await fixture.db.writeTransaction { tx in try Outbox.insert(command, in: tx) }
+            let before = try await fixture.queueRows()
+            let connector = fixture.connector()
+            await connector.installOnlineActionGuard()
+            try fixture.http.reply(to: "/" + path, status: 201, body: [:])
+            do {
+                try await fixture.api.callWithoutBody("POST", path, expecting: 201)
+                Issue.record("The assistant must not act using a preference the user just changed.")
+            } catch is AssistantSettingsPendingError { }
+            #expect(!fixture.http.paths.contains("/" + path))
+            let afterBlock = try await fixture.queueRows()
+            #expect(afterBlock == before)
+
+            // Cancelling an existing turn remains possible while the preference is uploading.
+            let cancelPath = "api/v1/assistant/turns/test/cancel"
+            try fixture.http.reply(to: "/" + cancelPath, body: [:])
+            try await fixture.api.callWithoutBody("POST", cancelPath, expecting: 200)
+            try fixture.http.reply(to: "/api/v1/sync/mutations", payload: [
+                "serverGeneration": .string(fixture.generation),
+                "results": [["clientCommandId": .string(command.id), "outcome": "applied"]],
+            ])
+            try await connector.uploadData(database: fixture.db)
+            try await fixture.api.callWithoutBody("POST", path, expecting: 201)
+            #expect(fixture.http.paths.filter { $0 == "/" + path }.count == 1)
+            let persistedBlock = try await LocalMeta.recoveryBlock(in: fixture.db)
+            #expect(persistedBlock == nil)
+        }
+    }
+
+    @Test func oversizedLocalTransactionKeepsItsQueueAndReplaysStableIDsAfterALaterBatchFails() async throws {
+        try await withFixture(seedQueue: false) { fixture in
+            try fixture.replySync()
+            let commands = (0..<102).map { index in
+                LocalCommand(type: "task.create", aggregateId: UUID().uuidString, chaining: .never,
+                             payload: ["title": .string("Task \(index)")])
+            }
+            try await fixture.db.writeTransaction { tx in
+                for command in commands { try Outbox.insert(command, in: tx) }
+            }
+            let firstResults: [JSONPayload] = commands.prefix(100).map {
+                ["clientCommandId": .string($0.id), "outcome": "applied"]
+            }
+            let lastResults: [JSONPayload] = commands.suffix(2).map {
+                ["clientCommandId": .string($0.id), "outcome": "applied"]
+            }
+            let duplicateResults: [JSONPayload] = commands.prefix(100).map {
+                ["clientCommandId": .string($0.id), "outcome": "duplicate", "original": ["outcome": "applied"]]
+            }
+            let path = "/api/v1/sync/mutations"
+            try fixture.http.enqueue(to: path, payload: [
+                "serverGeneration": .string(fixture.generation), "results": .array(firstResults),
+            ])
+            try fixture.http.enqueue(to: path, status: 503, payload: ["error": ["code": "UNAVAILABLE"]])
+            let before = try await fixture.queueRows()
+            #expect(before.count == 102)
+            do {
+                try await fixture.connector().uploadData(database: fixture.db)
+                Issue.record("A failed later batch must not acknowledge any of the local transaction.")
+            } catch let error as APIError {
+                guard case .http(503, _, _, _, _, _) = error else { throw error }
+            }
+            let afterFailure = try await fixture.queueRows()
+            #expect(afterFailure == before)
+
+            // Simulate restarting after the retry delay. The earlier server commits return duplicates.
+            try fixture.http.enqueue(to: path, payload: [
+                "serverGeneration": .string(fixture.generation), "results": .array(duplicateResults),
+            ])
+            try fixture.http.enqueue(to: path, payload: [
+                "serverGeneration": .string(fixture.generation), "results": .array(lastResults),
+            ])
+            try await fixture.connector().uploadData(database: fixture.db)
+            let afterSuccess = try await fixture.queueRows()
+            #expect(afterSuccess.isEmpty)
+            #expect(fixture.http.paths.filter { $0 == path }.count == 4)
+        }
+    }
+
     private func expectBlocked(_ connector: SyncConnector, by expected: SyncBlock) async throws {
         do {
             _ = try await connector.fetchCredentials()
@@ -492,6 +576,7 @@ private final class RecoveryHTTPScenario: @unchecked Sendable {
     private let continuation: AsyncStream<String>.Continuation
     private let lock = NSLock()
     private var replies: [String: Reply] = [:]
+    private var queuedReplies: [String: [Reply]] = [:]
     private var received: [String] = []
     private var held: [(RecoveryURLProtocol, Reply)] = []
     var paths: [String] { lock.withLock { received } }
@@ -512,11 +597,21 @@ private final class RecoveryHTTPScenario: @unchecked Sendable {
         lock.withLock { replies[path] = reply }
     }
 
+    func enqueue(to path: String, status: Int = 200, payload: JSONPayload) throws {
+        let reply = Reply(body: Data(try payload.encodedText().utf8), status: status, held: false)
+        lock.withLock { queuedReplies[path, default: []].append(reply) }
+    }
+
     func receive(_ request: RecoveryURLProtocol) {
         let path = request.request.url?.path ?? ""
         let response: Reply? = lock.withLock {
             received.append(path)
-            let reply = replies[path] ?? Reply(body: Data(), status: 500, held: false)
+            let reply: Reply
+            if queuedReplies[path]?.isEmpty == false {
+                reply = queuedReplies[path]!.removeFirst()
+            } else {
+                reply = replies[path] ?? Reply(body: Data(), status: 500, held: false)
+            }
             if reply.held {
                 held.append((request, reply))
                 return nil

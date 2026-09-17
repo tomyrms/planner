@@ -13,7 +13,7 @@ struct AssistantView: View {
         NavigationStack {
             ConversationTimeline()
                 .id(store.conversationId)
-                .safeAreaInset(edge: .bottom) {
+                .safeAreaInset(edge: .bottom, spacing: 0) {
                     Composer(focused: $composerFocused)
                 }
                 .navigationTitle("Assistant")
@@ -203,12 +203,15 @@ private struct MessageView: View {
     @ViewBuilder
     private var assistantBlock: some View {
         let isCard = message.kind == "action_result" || message.kind == "proposal"
+        let receipt = message.kind == "action_result" ? ReceiptLayout(text: message.text) : nil
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text(heading)
-                .font(isCard ? .subheadline.weight(.semibold) : .caption.weight(.medium))
+            Text(receipt?.summary ?? heading)
+                .font(isCard ? .headline : .caption.weight(.medium))
                 .foregroundStyle(isCard ? Color.primary : Color.secondary)
                 .accessibilityAddTraits(.isHeader)
-            if message.kind == "error" {
+            if let receipt {
+                ReceiptBody(layout: receipt)
+            } else if message.kind == "error" {
                 Label(message.text, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             } else {
@@ -238,6 +241,72 @@ private struct MessageView: View {
         case "clarification": "À préciser"
         default: "Assistant"
         }
+    }
+}
+
+/// Presentation of the server's receipt text. Every line stays visible and in its original order;
+/// grouping adds hierarchy without interpreting a task name as an action or claiming new effects.
+private nonisolated struct ReceiptLayout {
+    nonisolated struct Block: Identifiable {
+        let id: Int
+        let title: String
+        let details: String
+        let isWarning: Bool
+    }
+
+    let summary: String?
+    let blocks: [Block]
+
+    init(text: String) {
+        var lines = text.components(separatedBy: "\n")
+        if let first = lines.first,
+           first.range(of: #"^[1-9][0-9]* (tâches ajoutées|tâches mises à la corbeille|changements)$"#, options: .regularExpression) != nil {
+            summary = lines.removeFirst()
+        } else {
+            summary = nil
+        }
+        let stepPrefixes = [
+            "Ajouté : ", "Modifié : ", "Déplacé : ", "Terminé : ", "Rouvert : ",
+            "Mis à la corbeille : ", "Restauré : ", "Liste créée : ", "Série modifiée : ",
+            "Série terminée : ", "Ignoré : ", "Non fait : "
+        ]
+        var groups: [[String]] = []
+        for line in lines {
+            if groups.isEmpty || stepPrefixes.contains(where: { line.hasPrefix($0) }) {
+                groups.append([line])
+            } else {
+                groups[groups.count - 1].append(line)
+            }
+        }
+        blocks = groups.enumerated().map { index, lines in
+            Block(id: index, title: lines[0], details: lines.dropFirst().joined(separator: "\n"), isWarning: lines[0].hasPrefix("Non fait : "))
+        }
+    }
+}
+
+private struct ReceiptBody: View {
+    let layout: ReceiptLayout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            ForEach(layout.blocks) { block in
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text(block.title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(block.isWarning ? Color.orange : Color.primary)
+                    if !block.details.isEmpty {
+                        Text(block.details)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(3)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -299,12 +368,24 @@ private struct TurnActionsView: View {
 
     private var store: AssistantStore { services.assistant }
     private var busy: Bool { store.busy.contains(controls.turnId) || store.busy.contains(controls.undoActionId ?? "") }
+    private var taskIds: [String] {
+        var seen: Set<String> = []
+        return controls.taskIds.filter { seen.insert($0).inserted }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             if kind == "action_result" || controls.proposalState == "confirmed" {
-                ForEach(controls.taskIds.prefix(10), id: \.self) { taskId in
-                    TaskLink(taskId: taskId)
+                if !taskIds.isEmpty {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        Text(taskIds.count == 1 ? "Ouvrir la tâche" : "Ouvrir les tâches")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        ForEach(taskIds, id: \.self) { taskId in
+                            TaskLink(taskId: taskId)
+                        }
+                    }
+                    .padding(.top, Spacing.xs)
                 }
             }
             if kind == "proposal" {

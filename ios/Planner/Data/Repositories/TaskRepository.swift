@@ -81,6 +81,7 @@ nonisolated struct TaskRepository: Sendable {
 
     @discardableResult
     func create(_ draft: TaskDraft) async throws -> String {
+        try Self.validateDetails(draft, creating: true)
         let id = UUID().uuidString.lowercased()
         var payload: [String: JSONPayload] = ["title": .string(draft.trimmedTitle)]
         if !draft.notes.isEmpty { payload["notes"] = .string(draft.notes) }
@@ -90,6 +91,8 @@ nonisolated struct TaskRepository: Sendable {
         if let deadline = draft.deadline { payload["deadline"] = deadline.payload }
         if let minutes = draft.durationMinutes { payload["durationMinutes"] = .int(minutes) }
         if let recurrence = draft.recurrence { payload["recurrence"] = recurrence.payload }
+        if !draft.subtasks.isEmpty { payload["subtasks"] = .array(TaskSubtask.sorted(draft.subtasks).map(\.payload)) }
+        if !draft.tagIds.isEmpty { payload["tagIds"] = .array(draft.tagIds.map { $0.lowercased() }.sorted().map(JSONPayload.string)) }
         let reminderId = UUID().uuidString.lowercased()
         if let rule = draft.reminder {
             payload["reminders"] = [["id": .string(reminderId), "rule": rule.payload]]
@@ -115,6 +118,7 @@ nonisolated struct TaskRepository: Sendable {
             if let rule = draft.reminder {
                 try Self.insertReminderRow(id: reminderId, taskId: id, rule: rule, schedule: draft.schedule, deadline: draft.deadline, now: now, in: tx)
             }
+            try Self.insertInitialDetails(taskId: id, draft: draft, now: now, in: tx)
             try Outbox.insert(command, in: tx)
         }
         return id
@@ -122,26 +126,33 @@ nonisolated struct TaskRepository: Sendable {
 
     /// One `task.patch` with the fields that changed; nothing is queued when nothing changed.
     func update(_ id: String, from base: TaskDraft, to draft: TaskDraft, reapplying fields: Set<String> = []) async throws {
+        try Self.validateDetails(draft)
         let set = Self.patch(from: base, to: draft, reapplying: fields)
         let reminderChanged = draft.reminder != base.reminder
-        guard !set.isEmpty || reminderChanged else { return }
+        let detailsChanged = draft.subtasks != base.subtasks || draft.tagIds != base.tagIds
+        guard !set.isEmpty || reminderChanged || detailsChanged else { return }
         let command = set.isEmpty ? nil : LocalCommand(type: "task.patch", aggregateId: id, payload: .object(["set": .object(set)]))
         let columns = TaskColumns(draft)
         let now = Timestamp.format(Date())
         try await db.writeTransaction { tx in
-            let projectName = try Self.projectName(draft.projectId, in: tx)
-            try tx.execute(
-                sql: """
-                UPDATE tasks SET project_id = ?, title = ?, notes = ?, priority = ?,
-                       scheduled_date = ?, scheduled_time = ?, scheduled_time_zone = ?, duration_minutes = ?,
-                       deadline_date = ?, deadline_time = ?, deadline_time_zone = ?, search_text = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                parameters: columns.parameters(prefix: [], searchText: SearchText.normalize([draft.trimmedTitle, draft.notes, projectName]), suffix: [now, id])
-            )
+            try Self.writeDetails(taskId: id, from: base, to: draft, in: tx)
+            if command != nil {
+                let projectName = try Self.projectName(draft.projectId, in: tx)
+                try tx.execute(
+                    sql: """
+                    UPDATE tasks SET project_id = ?, title = ?, notes = ?, priority = ?,
+                           scheduled_date = ?, scheduled_time = ?, scheduled_time_zone = ?, duration_minutes = ?,
+                           deadline_date = ?, deadline_time = ?, deadline_time_zone = ?, search_text = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    parameters: columns.parameters(prefix: [], searchText: SearchText.normalize([draft.trimmedTitle, draft.notes, projectName]), suffix: [now, id])
+                )
+            }
             // The planning change comes first: a new reminder then refers to the new base.
-            if let command { try Outbox.insert(command, in: tx) }
-            try Self.refreshReminderStates(taskId: id, schedule: draft.schedule, deadline: draft.deadline, in: tx)
+            if let command {
+                try Outbox.insert(command, in: tx)
+                try Self.refreshReminderStates(taskId: id, schedule: draft.schedule, deadline: draft.deadline, in: tx)
+            }
             if reminderChanged {
                 try Self.writeReminder(task: id, existingId: base.reminderId, rule: draft.reminder, schedule: draft.schedule, deadline: draft.deadline, in: tx)
             }

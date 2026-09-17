@@ -7,6 +7,31 @@ import Testing
 /// connection or acknowledgement is involved in exporting it.
 @MainActor
 struct LocalExportTests {
+    @Test func taskDetailsAndRetiredTagsSurviveAnOfflineRecoveryExport() async throws {
+        try await withDatabase { db in
+            let checklist = "[{\"id\":\"step\",\"title\":\"Étape conservée\",\"isCompleted\":true,\"sortOrder\":0}]"
+            try await db.writeTransaction { tx in
+                try tx.execute(sql: "INSERT INTO tasks (id, title, subtasks) VALUES ('task', 'Préparer', ?)", parameters: [checklist])
+                try tx.execute(sql: "INSERT INTO tags (id, name, deleted_at, revision) VALUES ('tag', 'Travail', '2026-09-17T12:00:00Z', 2)", parameters: [])
+                try tx.execute(sql: "INSERT INTO task_tags (id, task_id, tag_id, deleted_at) VALUES ('link', 'task', 'tag', NULL)", parameters: [])
+                try tx.execute(sql: "INSERT INTO user_settings (id, auto_tags, revision) VALUES ('owner', 1, 3)", parameters: [])
+            }
+            let before = try await queueRows(db)
+            let archive = try await LocalExportRepository(db: db).archive(context: offline)
+            let after = try await queueRows(db)
+            #expect(before == after)
+            let task = try object(#require(archive.tasks.first))
+            let expectedChecklist = try JSONPayload.decode(checklist)
+            #expect(task["subtasks"] == expectedChecklist)
+            let tag = try object(#require(archive.tags.first))
+            #expect(tag["deletedAt"] == "2026-09-17T12:00:00Z")
+            let link = try object(#require(archive.taskTags.first))
+            #expect(link["tagId"] == "tag")
+            let settings = try object(archive.assistantSettings)
+            #expect(settings["autoTags"] == true)
+            #expect(settings["revision"] == 3)
+        }
+    }
     private let instant = Date(timeIntervalSince1970: 1_789_646_400)
     private let offline = LocalExportContext(hasSynced: false, lastSyncedAt: nil, connection: "offline")
 

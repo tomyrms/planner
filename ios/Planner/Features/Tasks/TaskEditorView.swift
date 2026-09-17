@@ -19,6 +19,10 @@ struct TaskEditorView: View {
     @State private var base = TaskDraft()
     @State private var prepared = false
     @State private var current: TaskItem?
+    @State private var currentTagIds: Set<String> = []
+    @State private var tagsLoaded = false
+    @State private var tagsReadFailed = false
+    @State private var tagsRetryId = UUID()
     @State private var confirmingDiscard = false
     @State private var confirmingConflict = false
     @State private var confirmingEnd = false
@@ -43,6 +47,21 @@ struct TaskEditorView: View {
                         .focused($titleFocused)
                     TextField("Description", text: $draft.notes, axis: .vertical)
                         .lineLimit(2...8)
+                }
+                TaskSubtasksSection(subtasks: $draft.subtasks, isRecurring: isSeries)
+                Section {
+                    if tagsReadFailed {
+                        Text("Les tags de cette tâche n’ont pas pu être lus.").foregroundStyle(.secondary)
+                        Button("Réessayer") { tagsRetryId = UUID() }
+                    } else if !tagsLoaded {
+                        ProgressView("Lecture des tags…")
+                    } else {
+                        NavigationLink {
+                            TagPickerView(selection: $draft.tagIds)
+                        } label: {
+                            Text("Choisir les tags")
+                        }
+                    }
                 }
                 if changedElsewhere {
                     Section {
@@ -79,6 +98,12 @@ struct TaskEditorView: View {
                 )
                 if canChooseRecurrence {
                     RecurrenceSection(recurrence: recurrenceBinding, anchor: draft.schedule?.date ?? .today(), allowsNone: isCreating)
+                        .disabled(!draft.subtasks.isEmpty)
+                    if !draft.subtasks.isEmpty {
+                        Section {
+                            Text("Retirez les sous-tâches avant de choisir une répétition.").foregroundStyle(.secondary)
+                        }
+                    }
                 } else {
                     Section {
                         LabeledContent("Répétition", value: "Aucune")
@@ -164,6 +189,7 @@ struct TaskEditorView: View {
             }
             .onAppear(perform: prepare)
             .task(id: editedTaskId) { await observeCurrent() }
+            .task(id: tagsRetryId) { await observeTagIds() }
         }
     }
 
@@ -243,7 +269,8 @@ struct TaskEditorView: View {
     }
 
     private var canSave: Bool {
-        draft.isValid && draft.isValidSeries && reminderIsValid && !requiresAvailableProject && !saving && (isCreating || hasChanges || !reapplyingFields.isEmpty)
+        draft.isValid && draft.isValidSeries && reminderIsValid && tagsLoaded && !tagsReadFailed
+            && !requiresAvailableProject && !saving && (isCreating || hasChanges || !reapplyingFields.isEmpty)
     }
 
     private var requiresAvailableProject: Bool {
@@ -258,7 +285,7 @@ struct TaskEditorView: View {
     }
 
     private func storedDraft(_ task: TaskItem) -> TaskDraft {
-        TaskDraft(task: task, reminder: services.agenda.reminder(of: task.id))
+        TaskDraft(task: task, reminder: services.agenda.reminder(of: task.id), tagIds: currentTagIds)
     }
 
     private var currentIsDeleted: Bool { current?.isDeleted ?? false }
@@ -295,9 +322,30 @@ struct TaskEditorView: View {
         guard let id = editedTaskId else { return }
         do {
             for try await rows in try services.tasks.observeTask(id: id) {
+                try Task.checkCancellation()
                 current = rows.first
             }
         } catch {}
+    }
+
+    private func observeTagIds() async {
+        prepare()
+        guard let id = editedTaskId else { tagsLoaded = true; return }
+        tagsReadFailed = false
+        do {
+            for try await ids in try services.tasks.observeTagIds(taskId: id) {
+                try Task.checkCancellation()
+                currentTagIds = Set(ids)
+                if !tagsLoaded {
+                    base.tagIds = currentTagIds
+                    draft.tagIds = currentTagIds
+                    tagsLoaded = true
+                }
+            }
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
+            tagsReadFailed = true
+        }
     }
 
     private func save() {
@@ -341,7 +389,7 @@ struct TaskEditorView: View {
                 }
                 dismiss()
             } catch {
-                errorMessage = "La modification n’a pas pu être enregistrée sur cet iPhone."
+                errorMessage = (error as? TaskDetailsError)?.errorDescription ?? "La modification n’a pas pu être enregistrée sur cet iPhone."
             }
         }
     }

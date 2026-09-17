@@ -24,6 +24,14 @@ struct SettingsView: View {
                         Label("Diagnostics", systemImage: "stethoscope")
                     }
                 }
+                Section("Personnalisation") {
+                    NavigationLink { TagsView() } label: {
+                        Label("Tags", systemImage: "tag")
+                    }
+                    NavigationLink { AssistantSettingsView() } label: {
+                        Label("Assistant", systemImage: "text.bubble")
+                    }
+                }
                 deviceSection
                 aboutSection
             }

@@ -20,6 +20,10 @@ nonisolated struct LocalExportRepository: Sendable {
                 cursor in try cursor.getString(index: 0)
             }
             let projects = try Self.rows(Self.projectsSQL, in: tx)
+            let tags = try Self.rows(Self.tagsSQL, in: tx)
+            let taskTags = try Self.rows(Self.taskTagsSQL, in: tx)
+            let assistantSettings = try Self.rows(Self.settingsSQL, in: tx).first
+                ?? ["autoTags": false, "revision": 1, "createdAt": .null, "updatedAt": .null]
             let tasks = try Self.rows(Self.tasksSQL, in: tx)
             let occurrences = try Self.rows(Self.occurrencesSQL, in: tx)
             let reminders = try Self.rows(Self.remindersSQL, in: tx)
@@ -59,7 +63,8 @@ nonisolated struct LocalExportRepository: Sendable {
                     lastSyncedAt: context.lastSyncedAt.map(Timestamp.format), connection: context.connection,
                     replicatedServerGenerations: replicatedGenerations, warnings: warnings
                 ),
-                projects: projects, tasks: tasks, taskOccurrences: occurrences, reminders: reminders,
+                projects: projects, tags: tags, taskTags: taskTags, assistantSettings: assistantSettings,
+                tasks: tasks, taskOccurrences: occurrences, reminders: reminders,
                 conversations: withMessages, unlinkedMessages: unlinked, pendingCommands: commands,
                 syncRejections: rejections, drafts: drafts
             )
@@ -120,6 +125,7 @@ nonisolated struct LocalExportRepository: Sendable {
         """
     private static let tasksSQL = """
         SELECT json_object('id', id, 'projectId', project_id, 'title', title, 'notes', notes, 'priority', priority,
+          'subtasks', CASE WHEN subtasks IS NULL THEN json('[]') WHEN json_valid(subtasks) THEN json(subtasks) ELSE subtasks END,
           'status', status, 'completedAt', completed_at,
           'schedule', CASE WHEN scheduled_date IS NULL THEN NULL WHEN scheduled_time IS NULL THEN json_object('date', scheduled_date) ELSE json_object('date', scheduled_date,
             'time', substr(scheduled_time, 1, 5), 'timeZone', scheduled_time_zone) END,
@@ -130,6 +136,21 @@ nonisolated struct LocalExportRepository: Sendable {
           'missedIgnoredBefore', missed_ignored_before, 'deletedAt', deleted_at, 'revision', revision,
           'createdAt', created_at, 'updatedAt', updated_at)
         FROM tasks ORDER BY created_at, id
+        """
+    private static let tagsSQL = """
+        SELECT json_object('id', id, 'name', name, 'deletedAt', deleted_at, 'revision', revision,
+          'createdAt', created_at, 'updatedAt', updated_at)
+        FROM tags ORDER BY name, id
+        """
+    private static let taskTagsSQL = """
+        SELECT json_object('id', id, 'taskId', task_id, 'tagId', tag_id, 'deletedAt', deleted_at,
+          'createdAt', created_at, 'updatedAt', updated_at)
+        FROM task_tags ORDER BY task_id, tag_id
+        """
+    private static let settingsSQL = """
+        SELECT json_object('autoTags', json(CASE WHEN auto_tags = 1 THEN 'true' ELSE 'false' END),
+          'revision', revision, 'createdAt', created_at, 'updatedAt', updated_at)
+        FROM user_settings ORDER BY id
         """
     private static let occurrencesSQL = """
         SELECT json_object('id', id, 'taskId', task_id, 'occurrenceKey', occurrence_key, 'status', status,

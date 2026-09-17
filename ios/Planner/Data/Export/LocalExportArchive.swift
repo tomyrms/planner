@@ -5,11 +5,15 @@ import Foundation
 nonisolated struct LocalExportArchive: Encodable, Sendable {
     let exportVersion = 1
     let localExportVersion = 1
+    let taskDetailsVersion = 1
     let exportSource = "iphone"
     let exportedAt: String
     let serverGeneration: String?
     let localState: LocalExportState
     let projects: [JSONPayload]
+    let tags: [JSONPayload]
+    let taskTags: [JSONPayload]
+    let assistantSettings: JSONPayload
     let tasks: [JSONPayload]
     let taskOccurrences: [JSONPayload]
     let reminders: [JSONPayload]

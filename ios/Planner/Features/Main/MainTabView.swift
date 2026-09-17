@@ -17,25 +17,27 @@ struct MainTabView: View {
 
     var body: some View {
         @Bindable var navigator = services.navigator
-        TabView(selection: Binding(get: { selection }, set: { destination in select(destination) })) {
-            Tab("Mes tâches", systemImage: "checklist", value: Destination.today) {
-                TasksHomeView()
-                    .toolbarVisibility(.hidden, for: .tabBar)
+        // Reserve real layout space below TabView. A safeAreaInset outside the native tab
+        // container does not reliably reach its child NavigationStacks (notably the composer).
+        VStack(spacing: 0) {
+            TabView(selection: Binding(get: { selection }, set: { destination in select(destination) })) {
+                Tab("Mes tâches", systemImage: "checklist", value: Destination.today) {
+                    TasksHomeView()
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                }
+                Tab("Calendrier", systemImage: "calendar", value: Destination.calendar) {
+                    CalendarView()
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                }
+                Tab("Assistant", systemImage: "text.bubble", value: Destination.assistant) {
+                    AssistantView()
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                }
+                Tab("Listes", systemImage: "list.bullet", value: Destination.lists) {
+                    ListsView()
+                        .toolbarVisibility(.hidden, for: .tabBar)
+                }
             }
-            Tab("Calendrier", systemImage: "calendar", value: Destination.calendar) {
-                CalendarView()
-                    .toolbarVisibility(.hidden, for: .tabBar)
-            }
-            Tab("Assistant", systemImage: "text.bubble", value: Destination.assistant) {
-                AssistantView()
-                    .toolbarVisibility(.hidden, for: .tabBar)
-            }
-            Tab("Listes", systemImage: "list.bullet", value: Destination.lists) {
-                ListsView()
-                    .toolbarVisibility(.hidden, for: .tabBar)
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
             if !keyboardVisible { bottomBar }
         }
         .overlay(alignment: .bottom) {

@@ -89,7 +89,7 @@ actor APIClient {
     private var refreshing: Task<TokenResponse, any Error>?
     private var retired = false
     private let requireIdentityValidation: Bool
-    private var onlineActionValidator: (@Sendable () async throws -> Void)?
+    private var onlineActionValidator: (@Sendable (String) async throws -> Void)?
 
     init(session: StoredSession, clientVersion: String, credentials: CredentialStore, urlSession: URLSession? = nil, requireIdentityValidation: Bool = false) {
         self.baseURL = session.apiBaseURL
@@ -133,7 +133,7 @@ actor APIClient {
     /// A newly paired device cannot use this to relabel an existing database.
     func establishedUserId() -> String? { session?.userId }
 
-    func setOnlineActionValidator(_ validator: @escaping @Sendable () async throws -> Void) {
+    func setOnlineActionValidator(_ validator: @escaping @Sendable (String) async throws -> Void) {
         guard !retired else { return }
         onlineActionValidator = validator
     }
@@ -185,7 +185,7 @@ actor APIClient {
             try Task.checkCancellation()
             if requireIdentityValidation, method != "GET", path.hasPrefix("api/v1/assistant/") {
                 guard let onlineActionValidator else { throw APIError.transport(.notConnectedToInternet) }
-                try await onlineActionValidator()
+                try await onlineActionValidator(path)
             }
             let token = try await validAccessToken(forceRefresh: attempt > 0)
             // Token refresh is shared by callers; cancelling one caller must still prevent its upload.
