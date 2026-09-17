@@ -231,9 +231,11 @@ nonisolated struct TaskRepository: Sendable {
 
     private static func projectName(_ id: String?, in tx: any Transaction) throws -> String? {
         guard let id else { return nil }
-        return try tx.getOptional(sql: "SELECT name FROM projects WHERE id = ?", parameters: [id]) { cursor in
+        let name = try tx.getOptional(sql: "SELECT name FROM projects WHERE id = ? AND deleted_at IS NULL", parameters: [id]) { cursor in
             cursor.getStringOptional(index: 0) ?? ""
         }
+        guard let name else { throw ProjectMutationError.unavailable }
+        return name
     }
 
 }

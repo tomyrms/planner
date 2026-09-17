@@ -62,13 +62,15 @@ jobs:
           tail -n 3 build/xcodebuild.log
           exit "$status"
 
-      - name: Tests on the iOS 26.2 simulator (shared time fixtures)
+      - name: Tests on the iOS 26.2 simulator (fixtures and chat renders)
+        id: simulator_tests
         working-directory: ios
         run: |
           status=0
           xcodebuild test \
             -project Planner.xcodeproj -scheme Planner -configuration Debug \
             -destination 'platform=iOS Simulator,OS=26.2,name=iPhone 17' -derivedDataPath build/DerivedDataTests \
+            -resultBundlePath build/PlannerTests.xcresult \
             -skipPackagePluginValidation -skipMacroValidation \
             > build/xcodebuild-test.log 2>&1 || status=$?
           grep -E '(error|warning): |✘|Test run with|TEST SUCCEEDED|TEST FAILED' build/xcodebuild-test.log | sort -u | head -80 || true
@@ -77,6 +79,27 @@ jobs:
             xcrun simctl list devices available | head -40
           fi
           exit "$status"
+
+      - name: Export synthetic chat renders
+        if: always() && steps.simulator_tests.outcome != 'skipped'
+        working-directory: ios
+        run: |
+          xcrun xcresulttool export attachments \
+            --path build/PlannerTests.xcresult \
+            --output-path build/assistant-chat-renders
+          if [ -z "$(find build/assistant-chat-renders -type f -iname '*.png' -print -quit)" ]; then
+            echo 'No chat PNG was produced. Inspect the simulator test result.' >&2
+            exit 1
+          fi
+
+      - name: Keep synthetic chat renders for visual review
+        if: always() && steps.simulator_tests.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: assistant-chat-renders
+          path: ios/build/assistant-chat-renders/
+          if-no-files-found: error
+          retention-days: 14
 
       # Unsigned Release IPA for sideloading: iloader (or another sideloader) signs it with the free Apple ID
       # and changes the bundle identifier to <id>.<TEAMID>. The build number is the run number.
@@ -112,10 +135,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Keep the full log
-        if: failure()
+      - name: Keep diagnostic logs and test results
+        if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: xcodebuild-log
-          path: ios/build/xcodebuild*.log
+          path: |
+            ios/build/xcodebuild*.log
+            ios/build/PlannerTests.xcresult/
+          if-no-files-found: ignore
           retention-days: 7

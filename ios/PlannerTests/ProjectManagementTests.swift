@@ -103,6 +103,23 @@ struct ProjectManagementTests {
         }
     }
 
+    @Test func staleTaskEditorCannotCreateIntoAListDeletedWhileItWasOpen() async throws {
+        try await withDatabase { db in
+            let repository = TaskRepository(db: db)
+            let id = try await repository.createProject(name: "Liste")
+            let project = ProjectItem(id: id, name: "Liste", activeTaskCount: 0)
+            var draft = TaskDraft()
+            draft.title = "Brouillon ouvert"
+            draft.projectId = id
+            try await repository.deleteProject(project, policy: .inbox)
+            await #expect(throws: ProjectMutationError.self) { try await repository.create(draft) }
+            let count = try await db.get(sql: "SELECT count(*) FROM tasks", parameters: []) { try $0.getInt(index: 0) }
+            let queue = try await commands(db)
+            #expect(count == 0)
+            #expect(queue.count == 2)
+        }
+    }
+
     private func commands(_ db: any PowerSyncDatabaseProtocol) async throws -> [[String: JSONPayload]] {
         let archive = try await LocalExportRepository(db: db).archive(context: LocalExportContext(hasSynced: true, connection: "offline"))
         return try archive.pendingCommands.map {

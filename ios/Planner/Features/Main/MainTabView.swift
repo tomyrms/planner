@@ -12,6 +12,7 @@ struct MainTabView: View {
     @State private var keyboardVisible = false
     @State private var barWidth: CGFloat = 320
     @State private var suppressCaptureNavigation = false
+    @State private var globalCaptureVisible = false
 
     private nonisolated enum Destination: Hashable { case today, calendar, assistant, lists }
 
@@ -30,7 +31,7 @@ struct MainTabView: View {
                         .toolbarVisibility(.hidden, for: .tabBar)
                 }
                 Tab("Assistant", systemImage: "text.bubble", value: Destination.assistant) {
-                    AssistantView()
+                    AssistantView(recordingHandledByNavigation: globalCaptureVisible && !keyboardVisible)
                         .toolbarVisibility(.hidden, for: .tabBar)
                 }
                 Tab("Listes", systemImage: "list.bullet", value: Destination.lists) {
@@ -71,7 +72,8 @@ struct MainTabView: View {
             QuickCaptureAccessory(panelWidth: max(240, barWidth - 16),
                                   onAddTask: { addingTask = true },
                                   onOpenAssistant: { if !suppressCaptureNavigation { selection = .assistant } },
-                                  onCaptureStart: { suppressCaptureNavigation = false })
+                                  onCaptureStart: { suppressCaptureNavigation = false },
+                                  onCaptureVisibilityChange: { globalCaptureVisible = $0 })
                 .frame(width: 64)
                 .offset(y: -10)
                 .zIndex(1)

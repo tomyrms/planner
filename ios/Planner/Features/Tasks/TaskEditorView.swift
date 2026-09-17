@@ -378,7 +378,7 @@ struct TaskEditorView: View {
                 }
                 dismiss()
             } catch {
-                errorMessage = (error as? TaskDetailsError)?.errorDescription ?? "La modification n’a pas pu être enregistrée sur cet iPhone."
+                errorMessage = (error as? TaskDetailsError)?.errorDescription ?? (error as? ProjectMutationError)?.errorDescription ?? "La modification n’a pas pu être enregistrée sur cet iPhone."
             }
         }
     }

@@ -2,7 +2,7 @@
 
 App SwiftUI (iOS 26.0, Xcode 26.3, Swift 6). Le code est écrit depuis Windows ; **GitHub compile chaque push** avec la même toolchain que le Mac (workflow `iOS`, ADR-031) et publie un **IPA non signé** à installer avec iLoader. Le Mac n'est plus qu'une solution de secours. Décisions et règles : `../AGENTS.md`, pack de documentation (ADR-023, ADR-031).
 
-État au 17 septembre : appairage par lien, accueil **Mes tâches** (Aujourd'hui par défaut, Toutes les tâches actives, Inbox, À venir), listes, Terminées, Corbeille, recherche et synchronisation sur PowerSync Swift 1.16.2 ; calendrier, séries et rappels locaux ; assistant texte, historique et capture vocale. L'éditeur propose description, sous-tâches sur tâches sans répétition et tags réutilisables. L'utilisateur essaie l'app ; cela ne valide pas encore l'ensemble des parcours sur appareil.
+État au 17 septembre : appairage par lien, accueil **Mes tâches** (Aujourd'hui par défaut, Toutes les tâches actives, Inbox, À venir), listes, Terminées, Corbeille, recherche et synchronisation sur PowerSync Swift 1.16.2 ; calendrier, séries et rappels locaux ; assistant texte, historique et capture vocale. L'éditeur propose description, sous-tâches réordonnables sur tâches sans répétition, durée personnalisée et tags réutilisables. Les listes se renomment, se suppriment avec choix du sort de leurs tâches, puis se restaurent depuis la Corbeille. L'utilisateur essaie l'app ; cela ne valide pas encore l'ensemble des parcours sur appareil.
 
 Réglages > Assistant propose **Tags automatiques**, désactivé par défaut : l'assistant consulte le catalogue et choisit les tags pertinents pour les tâches qu'on lui demande de créer. L'état de synchronisation du réglage est visible. Réglages > Tags permet de gérer le catalogue.
 
@@ -14,9 +14,15 @@ Le petit **+** rond, légèrement surélevé **entre Calendrier et Assistant** d
 
 L'arrêt conserve le vocal dans l'Assistant : **Envoyer** lance son traitement. Le micro du chat reste une alternative par simple appui, et VoiceOver dispose d'une action « Enregistrer un vocal » sur le +. Les gestes, permissions initiales et animations demandent encore une validation sur l'iPhone.
 
+## Conversation de l'assistant
+
+Le chat utilise des bulles neutres pour les demandes, des réponses directement sur le fond et des résultats structurés sans empiler les cartes. Une proposition à confirmer garde une surface distincte. Le champ arrondi et son bouton d'envoi circulaire reprennent les formes et l'accent du + central. Les contrôles d'enregistrement restent dans la capsule globale lorsqu'elle est visible ; le micro du chat possède ses propres contrôles.
+
+Le champ et les états de reprise partagent un emplacement au-dessus du clavier. Les longs messages restent consultables, les actions s'adaptent aux grandes polices, et une nouvelle réponse ne ramène pas en bas un utilisateur qui lit l'historique. Le workflow produit l'artifact **assistant-chat-renders** : neuf planches SwiftUI avec données synthétiques, en clair, sombre et grandes polices. Ces images servent à la revue des composants ; elles ne valident ni le clavier, ni les gestes, ni VoiceOver sur un iPhone.
+
 ## Exporter les données locales
 
-Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les détails des tâches, tags, réglage assistant, commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. La récupération guidée conserve une archive vérifiée et l'ancienne copie locale ; l'import sélectif d'un export reste à livrer.
+Réglages > Données > **Exporter les données de cet iPhone** prépare un JSON puis ouvre Fichiers pour choisir où l'enregistrer. L'export fonctionne sans réseau et conserve les détails des tâches, tags, réglage assistant, commandes non envoyées, rejets et textes en cours. Il ne purge rien et ne relance pas la synchronisation. La copie locale peut être incomplète ; audio et identifiants d'accès sont exclus. La récupération guidée conserve une archive vérifiée et l'ancienne copie locale. L'import sélectif est disponible côté serveur via `admin import preview`, puis `admin import apply` après revue du plan : voir [le README du serveur](../README.md). Il crée de nouveaux objets et ne rejoue jamais la file de commandes exportée.
 
 ## Appairer l'app
 

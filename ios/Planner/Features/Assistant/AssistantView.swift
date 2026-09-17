@@ -3,6 +3,7 @@ import UIKit
 
 /// Assistant (02_Design/04_IA_Chat_UX.md): messages, results with Annuler, proposals, questions, composer.
 struct AssistantView: View {
+    var recordingHandledByNavigation = false
     @Environment(AppServices.self) private var services
     @State private var showingHistory = false
     @FocusState private var composerFocused: Bool
@@ -11,27 +12,48 @@ struct AssistantView: View {
 
     var body: some View {
         NavigationStack {
-            ConversationTimeline()
-                .id(store.conversationId)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    Composer(focused: $composerFocused)
-                }
+            GeometryReader { geometry in
+                ConversationTimeline(onUseExample: {
+                    guard store.draft.isEmpty, store.revising == nil, store.pending == nil, !store.isBusy else { composerFocused = true; return }
+                    store.draft = EmptyAssistantHint.example
+                    composerFocused = true
+                })
+                    .id(store.conversationId)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        Composer(focused: $composerFocused,
+                                 accessoryHeight: max(76, min(200, geometry.size.height * 0.38)),
+                                 recordingHandledByNavigation: recordingHandledByNavigation)
+                    }
+            }
+                .background(Color(uiColor: .systemBackground))
                 .navigationTitle("Assistant")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Historique", systemImage: "clock.arrow.circlepath") { showingHistory = true }
-                            .disabled(services.voice.phase != .idle)
+                        Button("Conversations", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                            .disabled(services.voice.phase != .idle || services.voice.isPreparingRecording)
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button("Nouvelle conversation", systemImage: "square.and.pencil") { store.newConversation() }
-                            .disabled(store.pending != nil || store.isBusy || (store.isEmptyConversation && store.draft.isEmpty) || services.voice.phase != .idle)
+                            .disabled(store.pending != nil || store.isBusy || (store.isEmptyConversation && store.draft.isEmpty) || services.voice.phase != .idle || services.voice.isPreparingRecording)
                     }
                 }
                 .sheet(isPresented: $showingHistory) {
                     ConversationHistoryView()
                 }
                 .sensoryFeedback(.success, trigger: store.successCount)
+                .onChange(of: store.phase) { _, phase in
+                    let announcement: String? = switch phase {
+                    case .idle: nil
+                    case .preparing: "Envoi du message"
+                    case .waiting: "Compréhension de la demande"
+                    case .unknown: "Résultat à vérifier"
+                    case .offline: "Hors ligne. Le message est conservé."
+                    case .notReceived: "Demande non reçue. Le message est conservé."
+                    case .refused: "Message non accepté. Le message est conservé."
+                    }
+                    if let announcement { UIAccessibility.post(notification: .announcement, argument: announcement) }
+                }
                 .task { store.start() }
         }
     }
@@ -40,6 +62,7 @@ struct AssistantView: View {
 /// A conversation owns its scroll state. Geometry only reports whether the bottom is near;
 /// appending a response never changes a reader's decision to stay higher in the history.
 private struct ConversationTimeline: View {
+    let onUseExample: () -> Void
     @Environment(AppServices.self) private var services
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var followsLatest = true
@@ -53,7 +76,7 @@ private struct ConversationTimeline: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.xl) {
                     if store.isEmptyConversation {
-                        EmptyAssistantHint()
+                        EmptyAssistantHint(onUseExample: onUseExample)
                     }
                     ForEach(store.entries) { entry in
                         MessageView(entry: entry)
@@ -65,7 +88,9 @@ private struct ConversationTimeline: View {
                         .id(Self.bottomId)
                         .accessibilityHidden(true)
                 }
-                .padding(Spacing.lg)
+                .padding(.horizontal, Spacing.lg)
+                .padding(.top, Spacing.xl)
+                .padding(.bottom, Spacing.md)
             }
             .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -117,24 +142,10 @@ private struct ConversationTimeline: View {
     }
 }
 
-private struct EmptyAssistantHint: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Écris ou dicte une demande.")
-                .font(.headline)
-            Text("« Demain 17 h, appeler le garage »")
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, Spacing.xl)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 /// One message; the assistant's last message of a turn carries the turn's actions.
 private struct MessageView: View {
     let entry: ThreadEntry
     @Environment(AppServices.self) private var services
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmingDelete = false
 
     private var message: ThreadMessage { entry.message }
@@ -166,16 +177,17 @@ private struct MessageView: View {
 
     private var userMessage: some View {
         VStack(alignment: .trailing, spacing: Spacing.xs) {
-            Text(message.text)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-                .accessibilityLabel((message.kind == "voice" ? "Vous, vocal : " : "Vous : ") + message.text)
+            ChatUserBubble(text: message.text, isVoice: message.kind == "voice")
             if let original = message.originalTranscript {
-                Text("Transcription d’origine : « \(original) »")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
+                DisclosureGroup("Transcription d’origine") {
+                    Text(original)
+                        .font(.subheadline)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Spacing.sm)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Spacing.md) { userMetadata }
@@ -183,39 +195,34 @@ private struct MessageView: View {
                 VStack(alignment: .trailing, spacing: Spacing.xs) { userMetadata }
             }
         }
-        .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 0 : 32)
         .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
     private var userMetadata: some View {
-        Text(message.kind == "voice" ? "Vous · Vocal" : "Vous")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.secondary)
-            .accessibilityHidden(true)
-        if message.kind == "voice", services.assistant.pending == nil {
-            Button("Corriger", systemImage: "pencil") { services.assistant.correct(entry) }
-                .font(.footnote)
-                .frame(minHeight: TouchTarget.comfort)
+        if message.kind == "voice" {
+            Label("Vocal", systemImage: "waveform")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            if services.assistant.pending == nil {
+                Button("Corriger", systemImage: "pencil") { services.assistant.correct(entry) }
+                    .font(.footnote)
+                    .frame(minHeight: TouchTarget.comfort)
+            }
         }
     }
 
     @ViewBuilder
     private var assistantBlock: some View {
-        let isCard = message.kind == "action_result" || message.kind == "proposal"
         let receipt = message.kind == "action_result" ? ReceiptLayout(text: message.text) : nil
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text(receipt?.summary ?? heading)
-                .font(isCard ? .headline : .caption.weight(.medium))
-                .foregroundStyle(isCard ? Color.primary : Color.secondary)
-                .accessibilityAddTraits(.isHeader)
+        ChatReplyGroup(style: replyStyle, heading: receipt?.summary ?? heading) {
             if let receipt {
                 ReceiptBody(layout: receipt)
-            } else if message.kind == "error" {
-                Label(message.text, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
             } else {
                 Text(message.text)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             if !entry.options.isEmpty {
@@ -225,28 +232,32 @@ private struct MessageView: View {
                 TurnActionsView(controls: controls, kind: message.kind, requestText: entry.requestText)
             }
         }
-        .padding(isCard ? Spacing.md : 0)
-        .background {
-            if isCard {
-                RoundedRectangle(cornerRadius: Radius.medium).fill(Color(.secondarySystemBackground))
-            }
-        }
-        .accessibilityElement(children: .contain)
     }
 
-    private var heading: String {
+    private var heading: String? {
         switch message.kind {
         case "action_result": "Résultat"
         case "proposal": entry.controls?.canConfirm == true ? "À confirmer" : "Proposition"
         case "clarification": "À préciser"
-        default: "Assistant"
+        case "error": "Demande non aboutie"
+        default: nil
+        }
+    }
+
+    private var replyStyle: ChatReplyStyle {
+        switch message.kind {
+        case "action_result": .result
+        case "proposal": .proposal
+        case "clarification": .question
+        case "error": .error
+        default: .text
         }
     }
 }
 
 /// Presentation of the server's receipt text. Every line stays visible and in its original order;
 /// grouping adds hierarchy without interpreting a task name as an action or claiming new effects.
-private nonisolated struct ReceiptLayout {
+nonisolated struct ReceiptLayout {
     nonisolated struct Block: Identifiable {
         let id: Int
         let title: String
@@ -284,16 +295,23 @@ private nonisolated struct ReceiptLayout {
     }
 }
 
-private struct ReceiptBody: View {
+struct ReceiptBody: View {
     let layout: ReceiptLayout
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             ForEach(layout.blocks) { block in
                 VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text(block.title)
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(block.isWarning ? Color.orange : Color.primary)
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
+                        if block.isWarning {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .accessibilityHidden(true)
+                        }
+                        Text(block.title)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+                    }
                     if !block.details.isEmpty {
                         Text(block.details)
                             .font(.subheadline)
@@ -310,36 +328,6 @@ private struct ReceiptBody: View {
     }
 }
 
-/// Native buttons keep their full labels; wide rows become a column before text is compressed.
-private struct ChatActions<Content: View>: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let content: Content
-    let alignment: Alignment
-
-    init(alignment: Alignment = .trailing, @ViewBuilder content: () -> Content) {
-        self.alignment = alignment
-        self.content = content()
-    }
-
-    var body: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            column
-        } else {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Spacing.md) { content }
-                    .fixedSize(horizontal: true, vertical: false)
-                column
-            }
-            .frame(maxWidth: .infinity, alignment: alignment)
-        }
-    }
-
-    private var column: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) { content }
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 /// Touchable answers to a question: each is sent as a new message.
 private struct OptionsView: View {
     let options: [String]
@@ -348,12 +336,21 @@ private struct OptionsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             ForEach(options, id: \.self) { option in
-                Button(option) {
+                Button {
                     Task { await services.assistant.choose(option) }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
+                        Text(option).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: Spacing.sm)
+                        Image(systemName: "arrow.turn.down.left").font(.footnote).accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: TouchTarget.comfort, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .frame(minHeight: TouchTarget.comfort)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
                 .disabled(services.assistant.isBusy || services.assistant.pending != nil)
+                if option != options.last { Divider() }
             }
         }
     }
@@ -377,10 +374,8 @@ private struct TurnActionsView: View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             if kind == "action_result" || controls.proposalState == "confirmed" {
                 if !taskIds.isEmpty {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        Text(taskIds.count == 1 ? "Ouvrir la tâche" : "Ouvrir les tâches")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Divider()
                         ForEach(taskIds, id: \.self) { taskId in
                             TaskLink(taskId: taskId)
                         }
@@ -392,11 +387,11 @@ private struct TurnActionsView: View {
                 proposalButtons
             }
             if controls.canUndo, let actionId = controls.undoActionId {
-                HStack {
-                    Spacer()
-                    Button("Annuler") {
+                ChatActions(alignment: .leading) {
+                    Button("Annuler l’action", systemImage: "arrow.uturn.backward") {
                         Task { await store.undo(actionId: actionId) }
                     }
+                    .font(.subheadline)
                     .disabled(busy)
                     .frame(minHeight: TouchTarget.comfort)
                 }
@@ -421,6 +416,7 @@ private struct TurnActionsView: View {
                     Task { await store.confirm(controls, requestText: requestText) }
                 }
                 .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
                 .frame(minHeight: TouchTarget.comfort)
             }
             .disabled(busy)
@@ -456,6 +452,7 @@ private struct TurnActionsView: View {
             if let requestText {
                 Button("Redemander") { store.draft = requestText }
                     .frame(minHeight: TouchTarget.comfort)
+                    .disabled(!store.draft.isEmpty || store.revising != nil || store.pending != nil || store.isBusy)
             }
         }
     }
@@ -476,6 +473,9 @@ private struct TaskLink: View {
     @Environment(AppServices.self) private var services
     @State private var task: TaskItem?
     @State private var editing = false
+    @State private var loaded = false
+    @State private var readFailed = false
+    @State private var retry = 0
 
     var body: some View {
         Group {
@@ -483,8 +483,12 @@ private struct TaskLink: View {
                 Button {
                     editing = true
                 } label: {
-                    HStack {
+                    HStack(spacing: Spacing.sm) {
+                        Image(systemName: "checklist")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
                         Text(task.title)
+                            .font(.subheadline)
                             .strikethrough(task.isCompleted)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
@@ -500,14 +504,25 @@ private struct TaskLink: View {
                 .sheet(isPresented: $editing) {
                     TaskEditorView(mode: .edit(task))
                 }
+            } else if readFailed {
+                Button("Recharger la tâche", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.subheadline)
+                    .frame(minHeight: TouchTarget.comfort)
+            } else if loaded {
+                ChatNotice(text: "Cette tâche n’est pas disponible sur cet iPhone.")
+            } else {
+                ChatProgressLabel(text: "Chargement de la tâche…")
             }
         }
-        .task(id: taskId) {
+        .task(id: taskId + "-\(retry)") {
+            readFailed = false
             do {
                 for try await rows in try services.tasks.observeTask(id: taskId) {
+                    guard !Task.isCancelled else { return }
                     task = rows.first
+                    loaded = true
                 }
-            } catch {}
+            } catch { if !Task.isCancelled { readFailed = true } }
         }
     }
 }
@@ -524,145 +539,187 @@ private struct TurnStateView: View {
             case .idle:
                 EmptyView()
             case .preparing:
-                status("Envoi…")
+                ChatProgressLabel(text: "Envoi…")
             case .waiting:
                 ChatActions(alignment: .leading) {
-                    status("Compréhension…")
+                    ChatProgressLabel(text: "Compréhension…")
                     Button("Annuler") { Task { await store.cancelTurn() } }
                         .font(.footnote)
                         .frame(minHeight: TouchTarget.comfort)
                 }
             case .unknown:
-                Text("Résultat inconnu.")
+                ChatNotice(text: "Résultat inconnu. Vérifie la réponse avant de continuer.", symbol: "questionmark.circle")
                 Button("Vérifier le résultat") { Task { await store.verify() } }
-                    .buttonStyle(.bordered)
                     .frame(minHeight: TouchTarget.comfort)
             case .offline:
-                Text("L’assistant a besoin du réseau. Ton message est gardé.")
+                ChatNotice(text: "L’assistant a besoin du réseau. Ton message est gardé.", symbol: "wifi.slash")
                 ChatActions(alignment: .leading) {
                     Button("Envoyer") { Task { await store.resend() } }
-                        .buttonStyle(.bordered)
                         .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
                         .frame(minHeight: TouchTarget.comfort)
                 }
             case .notReceived:
-                Text("Le serveur n’a pas reçu cette demande.")
+                ChatNotice(text: "Le serveur n’a pas reçu cette demande.", symbol: "arrow.up.circle")
                 ChatActions(alignment: .leading) {
                     Button("Envoyer") { Task { await store.resend() } }
-                        .buttonStyle(.bordered)
                         .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
                         .frame(minHeight: TouchTarget.comfort)
                 }
             case .refused:
-                Text("Le message n’a pas été accepté. Il est conservé.")
+                ChatNotice(text: "Le message n’a pas été accepté. Il est conservé.", symbol: "exclamationmark.circle")
                 ChatActions(alignment: .leading) {
                     Button("Réessayer") { Task { await store.resend() } }
-                        .buttonStyle(.bordered)
                         .frame(minHeight: TouchTarget.comfort)
                     Button("Modifier le message") { store.discardPending() }
                         .frame(minHeight: TouchTarget.comfort)
                 }
             }
             if let notice = store.notice {
-                Text(notice)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
+                ChatNotice(text: notice)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func status(_ text: String) -> some View {
-        HStack(spacing: Spacing.sm) {
-            ProgressView()
-            Text(text)
-                .foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-    }
 }
 
 /// Text field, microphone and send; the draft survives failures and closing the app.
 private struct Composer: View {
     @FocusState.Binding var focused: Bool
+    let accessoryHeight: CGFloat
+    let recordingHandledByNavigation: Bool
     @Environment(AppServices.self) private var services
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var store: AssistantStore { services.assistant }
 
     var body: some View {
-        VStack(spacing: Spacing.xs) {
+        ChatComposerSurface {
+            VStack(spacing: Spacing.xs) {
+                if hasAccessories {
+                    ComposerAccessories(maximumHeight: accessoryHeight) { accessories }
+                        .padding(.horizontal, Spacing.sm)
+                        .padding(.top, Spacing.sm)
+                    Divider().padding(.horizontal, Spacing.sm)
+                }
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        messageField
+                        HStack(spacing: Spacing.xs) { captureAndSend }
+                    }
+                } else {
+                    HStack(alignment: .bottom, spacing: Spacing.xs) {
+                        messageField
+                        captureAndSend
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .onChange(of: services.voice.phase) { _, phase in
+            let announcement: String? = switch phase {
+            case .idle: nil
+            case .recording: "Enregistrement en cours"
+            case .finishing: "Finalisation du vocal"
+            case .checking: "Vérification du vocal"
+            case .uploading: "Envoi du vocal"
+            case .transcribing: "Transcription en cours"
+            case .delivering: "Envoi du texte transcrit"
+            }
+            if let announcement { UIAccessibility.post(notification: .announcement, argument: announcement) }
+        }
+    }
+
+    private var hasAccessories: Bool {
+        store.revising != nil || services.voice.draft != nil || services.voice.notice != nil ||
+            (services.voice.phase == .recording && !recordingHandledByNavigation) || services.voice.phase == .finishing || services.voice.permissionDenied
+    }
+
+    private var accessories: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             if store.revising != nil {
                 ChatActions(alignment: .leading) {
                     Label(store.revising?.undoActionId == nil ? "Correction du message" : "Correction : l’action précédente sera annulée",
                           systemImage: "pencil")
                         .font(.footnote)
-                    Button("Annuler la correction") { store.cancelCorrection() }
-                        .font(.footnote)
-                        .frame(minHeight: TouchTarget.comfort)
+                    Button { store.cancelCorrection() } label: {
+                        Image(systemName: "xmark")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: TouchTarget.comfort, height: TouchTarget.comfort)
+                    }
+                    .accessibilityLabel("Annuler la correction")
                 }
             }
             VoiceDraftBar()
             if let notice = services.voice.notice {
-                Text(notice)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ChatNotice(text: notice)
             }
-            if services.voice.phase == .recording {
+            if services.voice.phase == .recording && !recordingHandledByNavigation {
                 VoiceRecorderBar()
             } else if services.voice.phase == .finishing {
-                HStack(spacing: Spacing.sm) {
-                    ProgressView()
-                    Text("Finalisation du vocal…")
-                        .font(.subheadline)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                ChatProgressLabel(text: "Finalisation du vocal…")
                 .frame(maxWidth: .infinity, minHeight: TouchTarget.comfort, alignment: .leading)
-                .accessibilityElement(children: .combine)
-            } else if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .trailing, spacing: Spacing.xs) {
-                    messageField
-                    HStack(spacing: Spacing.sm) { captureAndSend }
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: Spacing.sm) {
-                    messageField
-                    captureAndSend
+            }
+            if services.voice.permissionDenied {
+                ChatNotice(text: "Le micro n’est pas autorisé. Tu peux toujours écrire.", symbol: "mic.slash")
+                ChatActions(alignment: .leading) {
+                    Button("Ouvrir Réglages") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            services.voice.permissionDenied = false
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .frame(minHeight: TouchTarget.comfort)
+                    Button("Plus tard") { services.voice.permissionDenied = false }
+                        .frame(minHeight: TouchTarget.comfort)
                 }
             }
         }
-        .padding(.horizontal, Spacing.lg)
-        .padding(.vertical, Spacing.sm)
-        .background(.bar)
     }
 
     private var messageField: some View {
         @Bindable var store = services.assistant
-        return TextField("Message…", text: $store.draft, axis: .vertical)
-            .lineLimit(1...5)
+        return TextField("Écris une demande…", text: $store.draft, axis: .vertical)
+            .lineLimit(1...(dynamicTypeSize.isAccessibilitySize ? 2 : 5))
             .focused($focused)
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm)
             .frame(minHeight: TouchTarget.comfort)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: Radius.medium))
             .accessibilityLabel("Message à l’assistant")
     }
 
     @ViewBuilder
     private var captureAndSend: some View {
-        if services.voice.draft == nil { VoiceButton() }
-        Button {
+        if services.voice.draft == nil, services.voice.phase != .recording, services.voice.phase != .finishing { VoiceButton() }
+        ChatSendButton(enabled: store.canSend && services.voice.phase == .idle && !services.voice.isPreparingRecording) {
             Task { await store.send() }
-        } label: {
-            Image(systemName: "arrow.up.circle.fill")
-                .font(.title2)
-                .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
         }
-        .disabled(!store.canSend || services.voice.isWorking)
-        .accessibilityLabel("Envoyer")
+    }
+}
+
+/// A long recovery explanation or large-text voice draft can scroll without pushing the field off
+/// the keyboard. The maximum comes from the actual available area, not a guessed tab/keyboard height.
+private struct ComposerAccessories<Content: View>: View {
+    let maximumHeight: CGFloat
+    let content: Content
+    @State private var contentHeight: CGFloat = 1
+
+    init(maximumHeight: CGFloat, @ViewBuilder content: () -> Content) {
+        self.maximumHeight = maximumHeight
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(contentHeight, maximumHeight))
     }
 }
 
@@ -670,28 +727,38 @@ private struct Composer: View {
 struct ConversationHistoryView: View {
     @Environment(AppServices.self) private var services
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var conversations: [ConversationSummary] = []
     @State private var pendingDeletion: ConversationSummary?
+    @State private var loading = true
+    @State private var readFailed = false
+    @State private var retry = 0
 
     var body: some View {
         NavigationStack {
             List {
+                if readFailed, !conversations.isEmpty { historyReadError }
+                if services.assistant.pending != nil || services.assistant.isBusy {
+                    ChatNotice(text: "Une demande attend encore son résultat dans la conversation actuelle.")
+                }
                 ForEach(conversations) { conversation in
                     Button {
                         services.assistant.open(conversation: conversation.id)
                         dismiss()
                     } label: {
-                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                        VStack(alignment: .leading, spacing: Spacing.sm) {
                             Text(conversation.title)
                                 .foregroundStyle(.primary)
-                                .lineLimit(2)
+                                .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                             if let updatedAt = conversation.updatedAt {
                                 Text(updatedAt.formatted(.relative(presentation: .named)))
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .padding(.vertical, Spacing.xs)
                     }
+                    .disabled(services.assistant.pending != nil || services.assistant.isBusy)
                     .swipeActions {
                         Button("Supprimer", systemImage: "trash", role: .destructive) { pendingDeletion = conversation }
                     }
@@ -700,16 +767,32 @@ struct ConversationHistoryView: View {
                     }
                 }
             }
+            .listStyle(.plain)
             .overlay {
                 if conversations.isEmpty {
-                    ContentUnavailableView("Aucune conversation.", systemImage: "text.bubble")
+                    if loading {
+                        ChatProgressLabel(text: "Chargement des conversations…")
+                    } else if readFailed {
+                        ContentUnavailableView {
+                            Label("Historique indisponible", systemImage: "exclamationmark.bubble")
+                        } description: {
+                            Text("Les conversations n’ont pas pu être lues sur cet iPhone.")
+                        } actions: {
+                            Button("Réessayer") { retry += 1 }
+                                .frame(minHeight: TouchTarget.comfort)
+                        }
+                    } else if services.sync.hasSynced != true {
+                        VStack { SyncNotice() }.padding(Spacing.lg)
+                    } else {
+                        ContentUnavailableView("Aucune conversation", systemImage: "text.bubble", description: Text("Tes échanges avec l’assistant apparaîtront ici."))
+                    }
                 }
             }
-            .navigationTitle("Historique")
+            .navigationTitle("Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("OK") { dismiss() }
+                    Button("Fermer") { dismiss() }
                 }
             }
             .confirmationDialog("Supprimer cette conversation ?", isPresented: deletionBinding, titleVisibility: .visible, presenting: pendingDeletion) { conversation in
@@ -719,17 +802,33 @@ struct ConversationHistoryView: View {
             } message: { _ in
                 Text("Les messages sont supprimés. Les tâches créées restent.")
             }
-            .task {
+            .task(id: retry) {
+                loading = conversations.isEmpty
+                readFailed = false
                 do {
                     for try await rows in try services.assistantHistory.observeConversations() {
+                        guard !Task.isCancelled else { return }
                         conversations = rows
+                        loading = false
                     }
-                } catch {}
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    loading = false
+                    readFailed = true
+                }
             }
         }
     }
 
     private var deletionBinding: Binding<Bool> {
         Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } })
+    }
+
+    private var historyReadError: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            ChatNotice(text: "L’historique n’a pas pu être actualisé.", symbol: "exclamationmark.circle")
+            Button("Réessayer") { retry += 1 }
+                .frame(minHeight: TouchTarget.comfort)
+        }
     }
 }

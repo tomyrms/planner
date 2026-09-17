@@ -17,10 +17,11 @@ struct QuickCaptureAccessory: View {
     let onAddTask: () -> Void
     let onOpenAssistant: () -> Void
     var onCaptureStart: () -> Void = {}
+    var onCaptureVisibilityChange: (Bool) -> Void = { _ in }
 
     private var voice: VoiceMessageStore { services.voice }
     private var capturing: Bool { gesture.stage == .holding || gesture.stage == .locked }
-    private var finishing: Bool { gesture.stage == .finished || voice.phase == .finishing }
+    private var finishing: Bool { gesture.stage == .finished || (captureId != nil && voice.phase == .finishing) }
 
     var body: some View {
         @Bindable var voice = services.voice
@@ -68,6 +69,9 @@ struct QuickCaptureAccessory: View {
         .sensoryFeedback(.impact(weight: .light), trigger: voice.recorder.isRecording)
         .sensoryFeedback(.impact(weight: .medium), trigger: gesture.stage == .locked)
         .sensoryFeedback(.warning, trigger: gesture.stage == .cancelled)
+        .onChange(of: capturing || finishing, initial: true) { _, visible in
+            onCaptureVisibilityChange(visible)
+        }
         .onChange(of: voice.phase) { _, phase in
             // Auto-stop at two minutes, calls and route changes also leave a durable draft.
             if phase == .idle, let id = captureId, !voice.isPreparingRecording {
@@ -78,6 +82,7 @@ struct QuickCaptureAccessory: View {
             if phase != .active { interrupt() }
         }
         .onDisappear {
+            onCaptureVisibilityChange(false)
             interrupt()
             startTask?.cancel()
             feedbackTask?.cancel()
