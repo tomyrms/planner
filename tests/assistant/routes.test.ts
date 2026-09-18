@@ -49,7 +49,7 @@ describe('assistant HTTP routes and the five reference requests', () => {
   it('1 — « Demain rappelle-moi d’appeler le garage vers 17h » creates the task and its reminder', async () => {
     const { snapshot } = await say('Demain rappelle-moi d’appeler le garage vers 17h.');
     expect(snapshot).toMatchObject({ status: 'completed', riskClass: 'R1' });
-    expect(snapshot.messages[1].text).toBe('Ajouté : Appeler le garage — demain 17:00\nRappel : à l’heure prévue');
+    expect(snapshot.messages[1].text).toBe('Ajouté : Appeler le garage · demain 17:00\nRappel : à l’heure prévue');
     const id = snapshot.results[0].aggregateId;
     expect(await task(db.pool, id)).toMatchObject({ scheduled_date: TOMORROW, scheduled_time: '17:00:00', scheduled_time_zone: ZONE });
     expect((await db.pool.query('SELECT device_id FROM command_receipts WHERE client_command_id = $1', [snapshot.results[0].clientCommandId])).rows[0].device_id).toBe(tokens.deviceId);
@@ -85,8 +85,8 @@ describe('assistant HTTP routes and the five reference requests', () => {
     expect(events.map((event) => event.event)).toEqual(['turn.status', 'proposal', 'assistant.text', 'turn.final']);
     const proposal = events[1]!.data;
     expect(proposal.items.map((item: any) => item.text)).toEqual([
-      'Déplacé : Ranger le salon — aujourd’hui 19:00 → demain 19:00',
-      'Déplacé : Lessive — aujourd’hui 21:30 → demain 21:30',
+      'Déplacé : Ranger le salon · aujourd’hui 19:00 → demain 19:00',
+      'Déplacé : Lessive · aujourd’hui 21:30 → demain 21:30',
     ]);
     expect(proposal.criterion).toBe('Critère : ce soir après 18:00, priorité non haute, sans échéance aujourd’hui');
     expect(events[2]!.data.text).toContain('\nCritère : ce soir après 18:00, priorité non haute, sans échéance aujourd’hui\n');
@@ -140,7 +140,7 @@ describe('assistant HTTP routes and the five reference requests', () => {
   it('5 — « Demain j’ai cours jusqu’à 16h, trouve-moi un bon moment pour faire ça » proposes slots after the referenced task', async () => {
     const conversationId = randomUUID();
     const { snapshot: created } = await say('Rappelle-moi de réviser le partiel demain à 8h.', { conversationId });
-    expect(created.messages[1].text).toBe('Ajouté : Réviser le partiel — demain 08:00\nRappel : à l’heure prévue');
+    expect(created.messages[1].text).toBe('Ajouté : Réviser le partiel · demain 08:00\nRappel : à l’heure prévue');
     // « Appeler le garage » (17:00–17:30 by default) is already booked tomorrow.
     const { snapshot } = await say('Demain j’ai cours jusqu’à 16h, trouve-moi un bon moment pour faire ça.', { conversationId });
     expect(snapshot).toMatchObject({ status: 'completed', riskClass: 'R0', results: [] });

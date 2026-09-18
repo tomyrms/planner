@@ -168,8 +168,8 @@ describe('assistant decisions', () => {
       expect(snapshot.messages[1]).toMatchObject({ kind: 'proposal' });
       expect(snapshot.messages[1].text).toBe([
         'À confirmer (éléments choisis par interprétation, plusieurs éléments existants) :',
-        '• Déplacé : Ranger le bureau — aujourd’hui 19:00 → demain 19:00',
-        '• Déplacé : Lire un chapitre — aujourd’hui 21:30 → demain 21:30',
+        '• Déplacé : Ranger le bureau · aujourd’hui 19:00 → demain 19:00',
+        '• Déplacé : Lire un chapitre · aujourd’hui 21:30 → demain 21:30',
         'Rien n’est modifié avant ta confirmation.',
       ].join('\n'));
       const { proposalId, planHash } = snapshot.proposal;
@@ -177,7 +177,7 @@ describe('assistant decisions', () => {
       expect(await task(db.pool, first)).toMatchObject({ scheduled_date: TODAY });
 
       const confirmed = await service.confirm(user, proposalId, planHash) as Record<string, any>;
-      expect(confirmed).toMatchObject({ proposalId, state: 'confirmed', message: '2 changements\nDéplacé : Ranger le bureau — aujourd’hui 19:00 → demain 19:00\nDéplacé : Lire un chapitre — aujourd’hui 21:30 → demain 21:30' });
+      expect(confirmed).toMatchObject({ proposalId, state: 'confirmed', message: '2 changements\nDéplacé : Ranger le bureau · aujourd’hui 19:00 → demain 19:00\nDéplacé : Lire un chapitre · aujourd’hui 21:30 → demain 21:30' });
       expect(confirmed.results).toHaveLength(2);
       expect(await task(db.pool, first)).toMatchObject({ scheduled_date: TOMORROW, scheduled_time: '19:00:00', revision: 2 });
       expect(await task(db.pool, second)).toMatchObject({ scheduled_date: TOMORROW, scheduled_time: '21:30:00', revision: 2 });

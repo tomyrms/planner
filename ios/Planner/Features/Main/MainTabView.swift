@@ -11,7 +11,7 @@ struct MainTabView: View {
     @State private var navigationTask: Task<Void, Never>?
     @State private var keyboardVisible = false
     @State private var barWidth: CGFloat = 320
-    @State private var suppressCaptureNavigation = false
+    @State private var globalCaptureUsed = false
     @State private var globalCaptureVisible = false
 
     private nonisolated enum Destination: Hashable { case today, calendar, assistant, lists }
@@ -42,16 +42,25 @@ struct MainTabView: View {
             if !keyboardVisible { bottomBar }
         }
         .overlay(alignment: .bottom) {
-            if let offer = services.undo.current {
-                UndoBanner(message: offer.message) {
-                    Task { await services.undo.undo() }
-                } onClose: {
-                    services.undo.dismiss()
+            VStack(spacing: Spacing.sm) {
+                if selection != .assistant && !globalCaptureVisible &&
+                    (globalCaptureUsed || services.voice.draft != nil || services.assistant.pending?.transcriptionId != nil) {
+                    VoiceCaptureFeedback {
+                        // The only navigation associated with capture is a deliberate tap on Voir.
+                        select(.assistant)
+                    }
                 }
-                .padding(.horizontal, Spacing.lg)
-                .padding(.bottom, keyboardVisible ? 8 : 94)
-                .transition(.opacity)
+                if let offer = services.undo.current {
+                    UndoBanner(message: offer.message) {
+                        Task { await services.undo.undo() }
+                    } onClose: {
+                        services.undo.dismiss()
+                    }
+                    .transition(.opacity)
+                }
             }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.bottom, keyboardVisible ? 8 : 94)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: services.undo.current?.id)
         .sheet(isPresented: $addingTask) {
@@ -71,8 +80,7 @@ struct MainTabView: View {
             destination(.calendar, title: "Calendrier", symbol: "calendar")
             QuickCaptureAccessory(panelWidth: max(240, barWidth - 16),
                                   onAddTask: { addingTask = true },
-                                  onOpenAssistant: { if !suppressCaptureNavigation { selection = .assistant } },
-                                  onCaptureStart: { suppressCaptureNavigation = false },
+                                  onCaptureStart: { globalCaptureUsed = true },
                                   onCaptureVisibilityChange: { globalCaptureVisible = $0 })
                 .frame(width: 64)
                 .offset(y: -10)
@@ -122,7 +130,6 @@ struct MainTabView: View {
         guard destination != selection else { return }
         navigationTask?.cancel()
         if services.voice.phase == .recording || services.voice.phase == .finishing || services.voice.isPreparingRecording {
-            suppressCaptureNavigation = true
             navigationTask = Task {
                 await services.voice.appWillResignActive()
                 guard !Task.isCancelled else { return }

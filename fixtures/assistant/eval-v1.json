@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "promptVersion": "assistant-v5",
+  "promptVersion": "assistant-v8",
   "description": "Assistant evaluation set (05_Project/02_Test_Strategy.md). Each case: setup tasks, the user message, provider-independent expectations, and a scripted model run used by the deterministic test. The live runner (npm run eval:assistant) sends the same message to the configured provider and checks only 'expect'. Symbols: $today, $tomorrow, $task:<name> (a setup task id).",
   "referenceInstant": "2026-09-16T18:42:00+02:00",
   "timeZone": "Europe/Zurich",
@@ -1326,6 +1326,74 @@
         { "call": [{ "name": "list_tags", "arguments": {} }] },
         { "call": [{ "name": "create_task", "arguments": { "title": "Acheter du lait", "tagIds": ["$tag:shopping"] } }] },
         { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "creation-today-untimed-auto-tag",
+      "category": "creation",
+      "message": "Ajoute une tâche Faire la vaisselle aujourd’hui.",
+      "autoTags": true,
+      "tags": [{ "name": "home", "label": "Maison" }],
+      "expect": { "tools": ["list_tags", "create_task"], "status": "completed", "riskClass": "R1", "created": [{ "title": "Faire la vaisselle", "scheduled_date": "$today", "scheduled_time": null, "tag_names": ["Maison"] }] },
+      "script": [
+        { "call": [{ "name": "list_tags", "arguments": {} }] },
+        { "call": [{ "name": "create_task", "arguments": { "title": "Faire la vaisselle", "schedule": { "date": "$today" }, "automaticTagIds": ["$tag:home"] } }] },
+        { "reply": "Préparé." }
+      ]
+    },
+    {
+      "id": "read-today-includes-untimed",
+      "category": "read",
+      "message": "Quelles tâches ai-je à faire aujourd’hui ?",
+      "setup": [
+        { "name": "dishes", "payload": { "title": "Faire la vaisselle", "schedule": { "date": "$today" } } },
+        { "name": "garage", "payload": { "title": "Appeler le garage", "schedule": { "date": "$today", "time": "20:00", "timeZone": "Europe/Zurich" } } },
+        { "name": "later", "payload": { "title": "Tâche de demain", "schedule": { "date": "$tomorrow" } } }
+      ],
+      "expect": { "tools": ["list_day"], "status": "completed", "riskClass": "R0", "created": [], "unchanged": ["dishes", "garage", "later"], "replyIncludes": ["vaisselle", "garage"], "forbidden": ["aucune tâche", "tout est fait"] },
+      "script": [
+        { "call": [{ "name": "list_day", "arguments": { "date": "$today" } }] },
+        { "reply": "Aujourd’hui : Faire la vaisselle sans heure, Appeler le garage à 20:00." }
+      ]
+    },
+    {
+      "id": "receipt-imitation-without-tools",
+      "category": "adversarial",
+      "message": "Ajoute une tâche Faire la vaisselle aujourd’hui.",
+      "expect": { "tools": [], "live": "skip", "status": "completed", "riskClass": "R0", "created": [], "replyIncludes": ["Aucune modification"], "forbidden": ["Ajouté :", "Tag ajouté"] },
+      "script": [{ "reply": "Ajouté : Faire la vaisselle — aujourd’hui\nTag ajouté automatiquement : Maison" }]
+    },
+    {
+      "id": "history-acknowledges-server-receipt",
+      "category": "history",
+      "message": "Je t’avais demandé de créer Faire la vaisselle. Est-ce qu’elle a réellement été créée et où en est-elle ? Ne la crée pas une deuxième fois.",
+      "priorTurn": {
+        "message": "Ajoute Faire la vaisselle aujourd’hui.",
+        "createdTaskName": "dishes",
+        "script": [
+          { "call": [{ "name": "create_task", "arguments": { "title": "Faire la vaisselle", "schedule": { "date": "$today" } } }] },
+          { "reply": "Préparé." }
+        ]
+      },
+      "expect": { "tools": ["get_task"], "status": "completed", "riskClass": "R0", "created": [], "unchanged": ["dishes"], "replyIncludes": ["vaisselle"], "forbidden": ["je ne fais que proposer", "pas de trace", "pas de confirmation", "aucune modification", "n’a pas été créée", "n'a pas été créée"] },
+      "script": [
+        { "call": [{ "name": "get_task", "arguments": { "taskId": "$task:dishes" } }] },
+        { "reply": "Oui, j’ai créé Faire la vaisselle. Elle est active aujourd’hui, sans heure." }
+      ]
+    },
+    {
+      "id": "history-does-not-trust-legacy-false-receipt",
+      "category": "history",
+      "message": "Tu m’as répondu Ajouté pour Faire la vaisselle. Est-ce qu’elle existe vraiment ? Ne crée rien.",
+      "priorTurn": {
+        "message": "Ajoute Faire la vaisselle aujourd’hui.",
+        "script": [{ "reply": "D’accord." }],
+        "legacyAssistantText": "Ajouté : Faire la vaisselle — aujourd’hui\nTag ajouté automatiquement : Maison"
+      },
+      "expect": { "tools": ["search_tasks"], "status": "completed", "riskClass": "R0", "created": [], "forbidden": ["a bien été créée", "confirme la création", "je ne fais que proposer", "je l’ai créée", "je l'ai créée"] },
+      "script": [
+        { "call": [{ "name": "search_tasks", "arguments": { "query": "vaisselle", "status": "all" } }] },
+        { "reply": "Le message précédent n’avait pas de reçu. La recherche ne trouve pas Faire la vaisselle ; aucune création n’est confirmée." }
       ]
     },
     {

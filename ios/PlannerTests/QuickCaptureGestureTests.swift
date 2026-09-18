@@ -8,11 +8,11 @@ struct QuickCaptureGestureTests {
         #expect(gesture.stage == .idle)
     }
 
-    @Test func aHoldStartsAndFinishesOnlyOnce() {
+    @Test func aHoldReleaseAuthorizesExactlyOneSend() {
         var gesture = QuickCaptureGesture()
         #expect(gesture.begin() == .start)
         #expect(gesture.begin() == nil)
-        #expect(gesture.release() == .finish)
+        #expect(gesture.release() == .send)
         #expect(gesture.release() == nil)
         #expect(gesture.stage == .finished)
     }
@@ -86,12 +86,12 @@ struct QuickCaptureGestureTests {
         #expect(gesture.interrupt() == nil)
     }
 
-    @Test func sendCannotReplaceAnUnlockedReleaseCancelOrInterruption() {
+    @Test func lockedSendCannotReplaceAReleaseCancelOrInterruption() {
         var gesture = QuickCaptureGesture()
         #expect(gesture.send() == nil)
         _ = gesture.begin()
         #expect(gesture.send() == nil)
-        #expect(gesture.release() == .finish)
+        #expect(gesture.release() == .send)
         #expect(gesture.send() == nil)
         gesture.reset()
         _ = gesture.begin()

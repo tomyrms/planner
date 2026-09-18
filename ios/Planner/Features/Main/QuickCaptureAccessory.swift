@@ -1,12 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// Raised central action. Release keeps a draft; only a separate tap on the locked arrow sends it.
+/// Raised central action. Releasing a hold or tapping the locked arrow sends, without navigating.
 struct QuickCaptureAccessory: View {
     @Environment(AppServices.self) private var services
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var gesture = QuickCaptureGesture()
     @State private var startTask: Task<Void, Never>?
@@ -15,7 +13,6 @@ struct QuickCaptureAccessory: View {
     @State private var captureId: UUID?
     var panelWidth: CGFloat = 300
     let onAddTask: () -> Void
-    let onOpenAssistant: () -> Void
     var onCaptureStart: () -> Void = {}
     var onCaptureVisibilityChange: (Bool) -> Void = { _ in }
 
@@ -31,8 +28,7 @@ struct QuickCaptureAccessory: View {
         @Bindable var voice = services.voice
         // Keep the touch view at the same structural position for the whole gesture.
             ZStack {
-                Circle().fill(Color.accentColor.gradient)
-                    .shadow(color: Color.accentColor.opacity(0.22), radius: 5, y: 3)
+                Circle().fill(Color.accentColor)
                 if finishing {
                     ProgressView().tint(.white).accessibilityHidden(true)
                 } else {
@@ -67,7 +63,7 @@ struct QuickCaptureAccessory: View {
                     onMove: { x, y in
                         if let intent = gesture.move(x: x, y: y), intent == .cancel { cancel() }
                     },
-                    onRelease: { if gesture.release() == .finish { finish(interrupted: false) } },
+                    onRelease: { if gesture.release() == .send { finish(interrupted: false, send: true) } },
                     onInterrupt: { interrupt() },
                     onAccessibleRecord: { begin(locked: true) }
                 )
@@ -120,51 +116,17 @@ struct QuickCaptureAccessory: View {
         }
     }
 
-    /// After locking, instructions have served their purpose: keep only time and two controls.
+    /// The raised central arrow remains the only send button after locking.
     private var lockedCapture: some View {
-        HStack(spacing: Spacing.xs) {
-            Button(role: .cancel) { cancel() } label: {
-                Image(systemName: "trash")
-                    .frame(width: 44, height: 44)
+        VoiceRecordingControls(
+            elapsed: voice.recorder.elapsed, levels: voice.recorder.levels,
+            isLocked: true, isPreparing: voice.isPreparingRecording,
+            showsSend: false, canSend: canSendLocked,
+            onCancel: { cancel() }, onSend: {
+                guard canSendLocked, gesture.send() == .send else { return }
+                finish(interrupted: false, send: true)
             }
-            .accessibilityLabel("Annuler le vocal")
-            .accessibilityHint("Supprime cet enregistrement.")
-            Image(systemName: "lock.fill")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(voice.isPreparingRecording ? "Micro…" : VoiceRecorderBar.clock(voice.recorder.elapsed))
-                .font(.subheadline.monospacedDigit())
-                .fixedSize()
-                .accessibilityLabel("Durée du vocal")
-                .accessibilityValue(VoiceRecorderBar.clock(voice.recorder.elapsed))
-            if !typeSize.isAccessibilitySize {
-                VoiceInputLevel(levels: voice.recorder.levels)
-                    .frame(width: 30, height: 16)
-                    .padding(.horizontal, Spacing.xs)
-                    .accessibilityHidden(true)
-            }
-            Button { finish(interrupted: false) } label: {
-                Image(systemName: "stop.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.red)
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Arrêter le vocal")
-            .accessibilityHint("Conserve un brouillon à relire avant de l’envoyer.")
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, Spacing.xs)
-        .padding(.vertical, 3)
-        .background {
-            if reduceTransparency {
-                Capsule().fill(Color(uiColor: .secondarySystemBackground))
-            } else {
-                Capsule().fill(.regularMaterial)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Enregistrement verrouillé")
+        )
     }
 
     private var gestureCapture: some View {
@@ -172,15 +134,12 @@ struct QuickCaptureAccessory: View {
             if gesture.stage == .cancelled {
                 Label("Vocal annulé", systemImage: "xmark")
             } else {
-                HStack(spacing: Spacing.sm) {
-                    Image(systemName: gesture.stage == .locked ? "lock.fill" : "record.circle")
-                        .foregroundStyle(voice.recorder.isRecording ? Color.red : Color.secondary)
-                    Text(voice.isPreparingRecording ? "Micro…" : finishing ? "Finalisation…" : VoiceRecorderBar.clock(voice.recorder.elapsed))
-                        .monospacedDigit()
-                    VoiceInputLevel(levels: voice.recorder.levels)
-                        .frame(width: 42, height: 18)
-                        .accessibilityHidden(true)
-                }
+                VoiceRecordingControls(
+                    elapsed: voice.recorder.elapsed, levels: voice.recorder.levels,
+                    isPreparing: voice.isPreparingRecording, isFinishing: finishing,
+                    showsSend: false, canSend: false,
+                    onCancel: { cancel() }, onSend: {}
+                )
                 if !finishing {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: Spacing.xl) { gestureHints }
@@ -191,12 +150,12 @@ struct QuickCaptureAccessory: View {
             }
         }
         .font(.subheadline)
-        .padding(Spacing.md)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, Spacing.sm)
         .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder private var gestureHints: some View {
+        Text("Relâcher pour envoyer").foregroundStyle(.secondary)
         Label("Annuler", systemImage: "arrow.left")
             .foregroundStyle(gesture.cancelProgress > 0 ? Color.orange : Color.secondary)
         Label("Verrouiller", systemImage: "arrow.up")
@@ -215,7 +174,6 @@ struct QuickCaptureAccessory: View {
             if !started, !Task.isCancelled, captureId == id {
                 gesture.reset()
                 captureId = nil
-                if !voice.permissionDenied { onOpenAssistant() }
             }
             if !Task.isCancelled { startTask = nil }
         }
@@ -257,7 +215,6 @@ struct QuickCaptureAccessory: View {
         startTask?.cancel()
         startTask = nil
         finishTask = nil
-        if voice.draft != nil || voice.notice != nil { onOpenAssistant() }
     }
 
     private func interrupt() {

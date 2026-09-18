@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// Accessible alternative to the global hold gesture: tap, then explicit Stop and Send.
+/// Accessible alternative to holding: tap to record, then use the same circular Send action.
 struct VoiceButton: View {
     @Environment(AppServices.self) private var services
     @State private var startTask: Task<Void, Never>?
@@ -15,7 +15,8 @@ struct VoiceButton: View {
             Image(systemName: "mic")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
-                .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+                .frame(width: TouchTarget.comfort, height: TouchTarget.comfort)
+                .background(Color(uiColor: .tertiarySystemFill), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(voice.phase != .idle || voice.isPreparingRecording || voice.draft != nil || !services.assistant.canAcceptVoice)
@@ -28,22 +29,32 @@ struct VoiceButton: View {
     }
 }
 
-/// VoiceRecorderBar: duration, "Enregistrement", secondary waveform, separate Arrêter and Annuler.
+/// Kept mounted during finalization. The store owns the network operation after admission.
 struct VoiceRecorderBar: View {
     @Environment(AppServices.self) private var services
+    @State private var finishTask: Task<Void, Never>?
 
     private var voice: VoiceMessageStore { services.voice }
 
     var body: some View {
-        ChatRecordingBar(
+        VoiceRecordingControls(
             elapsed: voice.recorder.elapsed, levels: voice.recorder.levels,
+            isPreparing: voice.isPreparingRecording, isFinishing: voice.phase == .finishing,
+            canSend: finishTask == nil && voice.phase == .recording && voice.recorder.isRecording,
             onCancel: { voice.cancelRecording() },
-            onStop: { Task { await voice.stopRecording() } }
+            onSend: {
+                guard finishTask == nil else { return }
+                finishTask = Task {
+                    await voice.stopRecordingAndSend()
+                    finishTask = nil
+                }
+            }
         )
+        .onDisappear { finishTask?.cancel() }
     }
 
     static func clock(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
+        let total = max(0, Int(seconds))
         return "\(total / 60):" + (total % 60 < 10 ? "0" : "") + "\(total % 60)"
     }
 }

@@ -59,7 +59,20 @@ struct TaskEditorView: View {
                         NavigationLink {
                             TagPickerView(selection: $draft.tagIds)
                         } label: {
-                            Text("Choisir les tags")
+                            HStack(spacing: Spacing.md) {
+                                Text("Tags")
+                                Spacer(minLength: Spacing.sm)
+                                let names = services.tagDirectory.snapshot.catalogue
+                                    .filter { draft.tagIds.contains($0.id) }.map { $0.tag.name }
+                                if names.isEmpty {
+                                    Text(draft.tagIds.isEmpty ? "Aucun" : "\(draft.tagIds.count) sélectionnés")
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                } else {
+                                    TaskTagSummaryLabel(names: names)
+                                }
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Modifier les tags, \(draft.tagIds.count) sélectionnés")
                         }
                     }
                 }

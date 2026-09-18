@@ -507,11 +507,11 @@ private struct TaskLink: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Ouvrir « \(task.title) »")
+                        TaskTagLinks(taskId: task.id)
                         if !task.subtasks.isEmpty {
                             TaskSubtaskDisclosureButton(taskTitle: task.title, subtasks: task.subtasks, isExpanded: $subtasksExpanded)
                         }
                     }
-                    TaskTagLinks(taskId: task.id).padding(.leading, Spacing.xl)
                     if subtasksExpanded && !task.subtasks.isEmpty {
                         TaskSubtaskList(subtasks: task.subtasks).padding(.leading, Spacing.xl)
                     }
@@ -612,29 +612,37 @@ private struct Composer: View {
     private var store: AssistantStore { services.assistant }
 
     var body: some View {
-        ChatComposerSurface {
-            VStack(spacing: Spacing.xs) {
-                if hasAccessories {
-                    ComposerAccessories(maximumHeight: accessoryHeight) { accessories }
-                        .padding(.horizontal, Spacing.sm)
-                        .padding(.top, Spacing.sm)
-                    Divider().padding(.horizontal, Spacing.sm)
-                }
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        messageField
-                        HStack(spacing: Spacing.xs) { captureAndSend }
+        Group {
+            if !recordingHandledByNavigation || (services.voice.phase != .recording && services.voice.phase != .finishing) {
+                ChatComposerSurface {
+                    VStack(spacing: Spacing.xs) {
+                        if hasAccessories {
+                            ComposerAccessories(maximumHeight: accessoryHeight) { accessories }
+                                .padding(.horizontal, Spacing.sm)
+                                .padding(.top, Spacing.sm)
+                            if services.voice.phase != .recording && services.voice.phase != .finishing {
+                                Divider().padding(.horizontal, Spacing.sm)
+                            }
+                        }
+                        if services.voice.phase != .recording && services.voice.phase != .finishing {
+                            if dynamicTypeSize.isAccessibilitySize {
+                                VStack(alignment: .trailing, spacing: 0) {
+                                    messageField
+                                    HStack(spacing: Spacing.xs) { captureAndSend }
+                                }
+                            } else {
+                                HStack(alignment: .bottom, spacing: Spacing.xs) {
+                                    messageField
+                                    captureAndSend
+                                }
+                            }
+                        }
                     }
-                } else {
-                    HStack(alignment: .bottom, spacing: Spacing.xs) {
-                        messageField
-                        captureAndSend
-                    }
                 }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
             }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
         .onChange(of: services.voice.phase) { _, phase in
             let announcement: String? = switch phase {
             case .idle: nil
@@ -673,11 +681,8 @@ private struct Composer: View {
             if let notice = services.voice.notice {
                 ChatNotice(text: notice)
             }
-            if services.voice.phase == .recording && !recordingHandledByNavigation {
+            if (services.voice.phase == .recording || services.voice.phase == .finishing) && !recordingHandledByNavigation {
                 VoiceRecorderBar()
-            } else if services.voice.phase == .finishing {
-                ChatProgressLabel(text: "Finalisation du vocal…")
-                .frame(maxWidth: .infinity, minHeight: TouchTarget.comfort, alignment: .leading)
             }
             if services.voice.permissionDenied {
                 ChatNotice(text: "Le micro n’est pas autorisé. Tu peux toujours écrire.", symbol: "mic.slash")

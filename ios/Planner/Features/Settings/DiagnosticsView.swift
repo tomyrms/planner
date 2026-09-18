@@ -120,7 +120,7 @@ struct DiagnosticsView: View {
 
     private var syncText: String {
         switch services.sync.block {
-        case .generationChanged: "Suspendue — serveur restauré"
+        case .generationChanged: "Suspendue. serveur restauré"
         case .pairingRequired: "Nouvel appairage nécessaire"
         case .updateRequired: "Mise à jour de l’app nécessaire"
         case .serverMisconfigured: "Configuration du serveur à vérifier"
@@ -144,7 +144,7 @@ struct DiagnosticsView: View {
     private func statusText(_ state: DiagnosticsRun.State, maximumAge: TimeInterval?) -> String {
         switch state {
         case .unknown: "Aucun résultat enregistré"
-        case .inconsistent: "Dates incohérentes — état inconnu"
+        case .inconsistent: "Dates incohérentes. état inconnu"
         case .failed: "Dernier passage en échec"
         case .stale: maximumAge == 3_600 ? "Aucune réussite depuis plus d’une heure" : "Aucune réussite depuis plus de 24 h"
         case .succeeded: maximumAge == nil ? "Réussite enregistrée" : "Réussite récente enregistrée"

@@ -1,111 +1,152 @@
 import SwiftUI
 
-/// Reads the session's shared tag projection. Each label has its own navigation/accessibility target;
-/// it is deliberately outside the task's edit button and its combined accessibility sentence.
+/// A quiet, single-line summary in the task row. The full catalogue remains one tap away.
+/// The hit area stays accessible without giving each tag a separate 44-point-high row.
 struct TaskTagLinks: View {
     let taskId: String
     @Environment(AppServices.self) private var services
+    @State private var showingTags = false
 
     var body: some View {
         let tags = services.tagDirectory.tags(for: taskId)
-        if !tags.isEmpty {
-            TagLabelFlow {
-                ForEach(tags) { tag in
-                    NavigationLink {
-                        TagTasksView(tag: tag)
-                    } label: {
-                        TaskTagLabel(name: tag.name)
+        Group {
+            if services.tagDirectory.failed {
+                Button {
+                    services.tagDirectory.start(services.tasks)
+                } label: {
+                    Image(systemName: "tag.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Tags indisponibles")
+                .accessibilityHint("Réessayer la lecture des tags")
+                .disabled(services.isRecoverySuspended)
+            } else if tags.count == 1, let tag = tags.first {
+                NavigationLink {
+                    TagTasksView(tag: tag)
+                } label: {
+                    TaskTagSummaryLabel(names: [tag.name])
+                        .frame(minHeight: TouchTarget.comfort)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Tag \(tag.name)")
+                .accessibilityHint("Afficher les tâches avec ce tag")
+            } else if !tags.isEmpty {
+                Button { showingTags = true } label: {
+                    TaskTagSummaryLabel(names: tags.map(\.name))
+                        .frame(minHeight: TouchTarget.comfort)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Tags : " + tags.map(\.name).joined(separator: ", "))
+                .accessibilityHint("Afficher tous les tags de cette tâche")
+            }
+        }
+        .sheet(isPresented: $showingTags) { TaskTagsSheet(taskId: taskId) }
+    }
+}
+
+/// Width, not a character count, decides whether two names, one name or a count fits.
+/// No wrapping, scrolling, coloured pills, or repeated hash signs. Full names remain accessible.
+struct TaskTagSummaryLabel: View {
+    let names: [String]
+
+    var body: some View {
+        if !names.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                label(visibleCount: 2).fixedSize(horizontal: true, vertical: false)
+                label(visibleCount: 1).fixedSize(horizontal: true, vertical: false)
+                label(visibleCount: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(minWidth: TouchTarget.comfort, maxWidth: 120, alignment: .trailing)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Tags : " + names.joined(separator: ", "))
+        }
+    }
+
+    private func label(visibleCount: Int) -> some View {
+        HStack(spacing: Spacing.xs) {
+            Image(systemName: "tag").accessibilityHidden(true)
+            Text(TagPresentation.summary(names, visibleCount: visibleCount))
+                .lineLimit(1)
+        }
+    }
+}
+
+/// Kept live while open: a rename/removal must not leave stale labels in an overflow menu.
+private struct TaskTagsSheet: View {
+    let taskId: String
+    @Environment(AppServices.self) private var services
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(services.tagDirectory.tags(for: taskId)) { tag in
+                        NavigationLink { TagTasksView(tag: tag) } label: {
+                            Label(tag.name, systemImage: "tag")
+                                .foregroundStyle(.primary)
+                        }
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Tag \(tag.name)")
-                    .accessibilityHint("Afficher les tâches avec ce tag")
+                    if services.tagDirectory.failed {
+                        Button("Réessayer la lecture des tags", systemImage: "arrow.clockwise") {
+                            services.tagDirectory.start(services.tasks)
+                        }
+                        .disabled(services.isRecoverySuspended)
+                    } else if services.tagDirectory.tags(for: taskId).isEmpty {
+                        Text("Aucun tag sur cette tâche.").foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("Choisissez un tag pour retrouver les tâches associées.")
+                }
+                Section {
+                    NavigationLink { TagsView() } label: {
+                        Label("Gérer les tags", systemImage: "tag")
+                    }
+                }
+            }
+            .navigationTitle("Tags de la tâche")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fermer") { dismiss() }
                 }
             }
         }
-        if services.tagDirectory.failed {
-            Button("Tags indisponibles · Réessayer", systemImage: "arrow.clockwise") {
-                services.tagDirectory.start(services.tasks)
-            }
-            .font(.footnote)
-            .buttonStyle(.borderless)
-            .frame(minHeight: TouchTarget.comfort)
-            .disabled(services.isRecoverySuspended)
-        }
     }
 }
 
-/// Text carries the tag; colour is only a navigation affordance, never a category code.
-struct TaskTagLabel: View {
-    let name: String
-
-    var body: some View {
-        Text("#\(name)")
-            .font(.subheadline)
-            .foregroundStyle(Color.accentColor)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(minWidth: TouchTarget.comfort, minHeight: TouchTarget.comfort, alignment: .leading)
-            .contentShape(Rectangle())
-    }
-}
-
-/// Natural-width labels wrap rather than truncate or disappear into a horizontal scroll area.
-/// A label longer than the available width uses multiple lines, including at accessibility sizes.
-struct TagLabelFlow: Layout {
-    var horizontalSpacing: CGFloat = 12
-    var verticalSpacing: CGFloat = 0
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrangement(width: proposal.width, subviews: subviews).size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrangement(width: bounds.width, subviews: subviews)
-        for (index, frame) in result.frames.enumerated() {
-            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
-                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
-        }
-    }
-
-    private func arrangement(width proposed: CGFloat?, subviews: Subviews) -> (size: CGSize, frames: [CGRect]) {
-        let width = max(0, proposed ?? .infinity)
-        var frames: [CGRect] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var lineHeight: CGFloat = 0
-        var usedWidth: CGFloat = 0
-        for subview in subviews {
-            let ideal = subview.sizeThatFits(.unspecified)
-            let size = subview.sizeThatFits(ProposedViewSize(width: min(width, ideal.width), height: nil))
-            if x > 0 && x + size.width > width {
-                x = 0
-                y += lineHeight + verticalSpacing
-                lineHeight = 0
-            }
-            frames.append(CGRect(x: x, y: y, width: size.width, height: size.height))
-            usedWidth = max(usedWidth, x + size.width)
-            x += size.width + horizontalSpacing
-            lineHeight = max(lineHeight, size.height)
-        }
-        return (CGSize(width: usedWidth, height: y + lineHeight), frames)
-    }
-}
-
-/// Anonymous component board for CI review; no database, navigation or service is constructed.
+/// Anonymous component board for CI review, including constrained widths and long names.
 struct TaskTagsPreview: View {
-    private let names = ["Études", "À préparer", "Révisions du semestre de printemps", "Maison"]
+    private let examples: [(String, [String])] = [
+        ("Préparer le cours", ["Études", "Projet"]),
+        ("Appeler le garage", ["Personnel"]),
+        ("Relire les notes de la semaine", ["Révisions du semestre de printemps", "Maison", "Études", "Projet"]),
+        ("Sans tag", []),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             Text("Mes tâches").font(.title2.weight(.semibold))
-            Text("Préparer le prochain cours").font(.body)
-            Text("Demain · 45 min").font(.subheadline).foregroundStyle(.secondary)
-            TagLabelFlow {
-                ForEach(names, id: \.self) { name in
-                    Button {} label: { TaskTagLabel(name: name) }.buttonStyle(.borderless)
+            ForEach(examples.indices, id: \.self) { index in
+                HStack(spacing: Spacing.sm) {
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        Text(examples[index].0).font(.body)
+                        Text("Demain · 45 min").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    TaskTagSummaryLabel(names: examples[index].1)
                 }
+                .frame(minHeight: TouchTarget.comfort)
+                Divider()
             }
-            Divider()
             Text("Tags").font(.headline).padding(.top, Spacing.lg)
             TagCatalogueLabel(name: "Études", activeCount: 3)
             TagCatalogueLabel(name: "Maison", activeCount: 0)

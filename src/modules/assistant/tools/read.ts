@@ -79,7 +79,9 @@ export async function searchTasks(pool: pg.Pool, state: TurnState, args: ToolArg
     LIMIT $4`, [state.turn.userId, status, tokens.map((token) => `%${escapeLike(token)}%`), args.limit]);
   for (const row of rows) observe(state, row, rows.length === 1 ? 'explicit' : 'ambiguous');
   if (rows.length === 1) state.referenced.set(rows[0].id, rows[0].title);
-  return { results: rows.map(taskSummary), truncated: rows.length === args.limit };
+  const results = rows.map(taskSummary);
+  for (const task of results) state.currentTaskReads.set(task.taskId, task);
+  return { results, truncated: rows.length === args.limit };
 }
 
 async function loadOccurrences(pool: pg.Pool, userId: string, taskIds: readonly string[]): Promise<Map<string, Map<string, OccurrenceRow>>> {
@@ -127,8 +129,10 @@ export async function getTask(pool: pg.Pool, state: TurnState, args: ToolArgs<'g
     const all = await loadOccurrences(pool, state.turn.userId, [row.id]);
     currentOccurrenceKey = currentCycleKey(row.scheduled_date, all.get(row.id) ?? new Map());
   }
+  const summary = taskSummary(row);
+  state.currentTaskReads.set(summary.taskId, summary);
   return {
-    ...taskSummary(row),
+    ...summary,
     notes: row.notes as string | null,
     subtasks,
     tags: tags.map((tag) => ({ tagId: tag.id, name: tag.name })),

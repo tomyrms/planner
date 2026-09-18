@@ -1,4 +1,5 @@
 import type { RawCommand } from '../sync/index.js';
+import type { TimeValue } from '../time/index.js';
 
 export interface CalendarEvent { start: string; end: string; allDay: boolean; title: string; calendarName: string }
 export interface CalendarContext { capturedAt: string; from: string; to: string; calendars: string[]; events: CalendarEvent[] }
@@ -55,6 +56,15 @@ export interface PreviewItem {
 
 export interface ProposedSlot { date: string; start: string; end: string }
 
+/** A successful get_task/search_tasks in this turn, never a preloaded historical reference. */
+export interface CurrentTaskRead {
+  taskId: string;
+  title: string;
+  status: string;
+  deleted: boolean;
+  schedule: TimeValue | null;
+}
+
 export class TurnState {
   readonly tasks = new Map<string, TaskObservation>();
   readonly projects = new Set<string>();
@@ -69,6 +79,8 @@ export class TurnState {
   readonly proposedSlots: ProposedSlot[] = [];
   /** Tasks worth naming in the next turn's context ("ça", "la même"). */
   readonly referenced = new Map<string, string>();
+  readonly historicalCreations = new Map<string, { undone: boolean }>();
+  readonly currentTaskReads = new Map<string, CurrentTaskRead>();
   invalidArguments = 0;
   /** Mutations that could not be prepared and were not retried later: reported next to the result. */
   readonly unprepared = new Map<string, { code: string; round: number }>();

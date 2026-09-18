@@ -1,7 +1,7 @@
 import { Temporal } from '@js-temporal/polyfill';
 import type { ReminderRule, TimeValue } from '../time/index.js';
 import type { RiskReason } from './risk.js';
-import type { PreviewItem } from './state.js';
+import type { PreviewItem, TurnState } from './state.js';
 
 /** Result texts are built from receipts and previews, never taken from the model (ADR-019). */
 
@@ -90,7 +90,7 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
       const schedule = changes.schedule?.after as TimeValue | null | undefined;
       const deadline = changes.deadline?.after as TimeValue | null | undefined;
       const parts = [`Ajouté : ${title}`];
-      if (schedule) parts[0] += ` — ${formatTime(schedule, today, zone)}`;
+      if (schedule) parts[0] += ` · ${formatTime(schedule, today, zone)}`;
       if (deadline) parts.push(`Échéance : ${formatTime(deadline, today, zone)}`);
       return [...parts, ...reminderLines(item, today, zone), ...detailLines(item)].join('\n');
     }
@@ -99,12 +99,12 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
     case 'task.tag.remove':
     case 'task.subtask.add':
     case 'task.subtask.patch':
-    case 'task.subtask.remove': return item.noop ? `${title} : rien à changer.` : `${title} — ${detailLines(item).join(', ')}`;
+    case 'task.subtask.remove': return item.noop ? `${title} : rien à changer.` : `${title} · ${detailLines(item).join(', ')}`;
     case 'task.patch': {
       if (item.noop) return `${title} : rien à changer.`;
       const fields = Object.keys(changes).filter((field) => field !== 'listName');
       if (fields.length === 1 && fields[0] === 'schedule') {
-        return `Déplacé : ${title} — ${formatTime(changes.schedule!.before as TimeValue, today, zone)} → ${formatTime(changes.schedule!.after as TimeValue, today, zone)}`;
+        return `Déplacé : ${title} · ${formatTime(changes.schedule!.before as TimeValue, today, zone)} → ${formatTime(changes.schedule!.after as TimeValue, today, zone)}`;
       }
       const details: string[] = [];
       if (changes.title) details.push(`${quote(changes.title.before)} → ${quote(changes.title.after)}`);
@@ -114,7 +114,7 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
       if (changes.listName) details.push(changes.listName.after ? `liste ${changes.listName.after}` : 'Inbox');
       if (changes.notes) details.push(changes.notes.after ? 'note modifiée' : 'note effacée');
       if (changes.durationMinutes) details.push(changes.durationMinutes.after ? `durée ${changes.durationMinutes.after} min` : 'durée retirée');
-      return `Modifié : ${title}${details.length ? ` — ${details.join(', ')}` : ''}`;
+      return `Modifié : ${title}${details.length ? ` · ${details.join(', ')}` : ''}`;
     }
     case 'task.complete': return item.noop ? `${title} était déjà terminée.` : `Terminé : ${title}`;
     case 'task.reopen': return item.noop ? `${title} était déjà ouverte.` : `Rouvert : ${title}`;
@@ -132,7 +132,7 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
       if (item.noop || !occurrence) return `${title} : déjà à cet horaire.`;
       const before = occurrence.before?.override ?? null;
       const after = occurrence.after?.override ?? null;
-      return `Déplacé : ${title} — ${occurrenceWhen(occurrence.key, before, today, zone)} → ${occurrenceWhen(occurrence.key, after, today, zone)}`;
+      return `Déplacé : ${title} · ${occurrenceWhen(occurrence.key, before, today, zone)} → ${occurrenceWhen(occurrence.key, after, today, zone)}`;
     }
     case 'series.update': return item.noop ? `${title} : série inchangée.` : `Série modifiée : ${title}`;
     case 'series.end': return item.noop ? `${title} : série déjà terminée.` : `Série terminée : ${title}`;
@@ -140,7 +140,7 @@ export function describeStep(item: PreviewItem, today: string, zone: string): st
     case 'reminder.remove': {
       if (item.noop) return `${title} : rappel inchangé.`;
       const lines = reminderLines(item, today, zone);
-      return `${title} — ${lines.join(', ') || 'rappel mis à jour'}`;
+      return `${title} · ${lines.join(', ') || 'rappel mis à jour'}`;
     }
     default: return `${item.commandType} : ${title}`;
   }
@@ -223,11 +223,29 @@ export function criterionFrom(text: string | null): string | null {
   return match ? `Critère : ${match[1]!.replace(/\.$/, '')}` : null;
 }
 
+/** A guarded free-form answer can be replaced by facts, never approved because an old receipt exists. */
+export function historicalCreationReply(state: TurnState): string | null {
+  const proven = [...state.currentTaskReads.values()]
+    .filter((task) => state.historicalCreations.has(task.taskId))
+    .sort((a, b) => a.taskId.localeCompare(b.taskId)).slice(0, 10);
+  if (proven.length === 0) return null;
+  const lines = proven.map((task) => {
+    const history = `Création confirmée lors d’un tour précédent : « ${task.title} ».`;
+    const undo = state.historicalCreations.get(task.taskId)!.undone ? ' Cette création a ensuite été annulée.' : '';
+    const status = task.deleted ? 'dans la corbeille' : task.status === 'completed' ? 'terminée' : 'active';
+    const schedule = task.schedule
+      ? `, prévue ${formatTime(task.schedule, state.turn.localDate, state.turn.timeZone)}${task.schedule.time == null ? ', sans heure' : ''}`
+      : ', sans date de planification';
+    return `${history}${undo}\nÉtat lu : ${status}${schedule}.`;
+  });
+  return `${lines.join('\n')}\nAucun nouveau changement n’a été effectué dans ce tour.`;
+}
+
 export const templates = {
   unsynced: 'Cette tâche a une modification pas encore envoyée depuis l’iPhone. Réessayer dans un instant ?',
   planTooLarge: 'Cette demande touche trop d’éléments en une fois (25 au maximum). Peux-tu la préciser ou la découper ?',
   invalidTwice: 'Je n’ai pas réussi à préparer cette action correctement. Peux-tu reformuler ?',
-  noEffectClaim: 'Je n’ai effectué aucune modification. Peux-tu préciser ce que tu veux changer ?',
+  noEffectClaim: 'Aucune modification n’a été enregistrée dans ce tour. La réponse de l’assistant ne confirmait pas une action réellement effectuée.',
   empty: 'Je n’ai pas de réponse à donner. Peux-tu reformuler ?',
   providerFailed: 'L’assistant n’a pas pu répondre. Rien n’a été modifié.',
   timeout: 'L’assistant a mis trop de temps. Rien n’a été modifié.',
@@ -245,9 +263,15 @@ export const templates = {
   },
 } as const;
 
-const EFFECT_CLAIM = /\b(j['’]ai|c['’]est|c['’]est bien|voilà,? j['’]ai)\s+(bien\s+)?(ajouté|créé|créée|supprimé|supprimée|déplacé|déplacée|décalé|terminé|terminée|fait|noté|notée|programmé|planifié|planifiée|modifié|modifiée|reporté|coché|cochée|mis|mise|enregistré|enregistrée)\b/i;
+// Normalize accents before matching: a JS \b after « ajouté » does not mark the end of that word.
+const EFFECT_VERB = '(?:ajoute|cree|supprime|deplace|decale|termine|fait|note|programme|planifie|modifie|reporte|coche|mis|enregistre|annule|retire|classe|affecte)(?:e?s?)?';
+const EFFECT_CLAIM = new RegExp(`\\b(j['’]ai|c['’]est|c['’]est bien|voila,? j['’]ai)\\s+(bien\\s+)?${EFFECT_VERB}\\b`, 'i');
+// « Note : » / « Programme : » are ordinary read headings; a count of completed tasks is a read too.
+const RECEIPT_VERB = '(?:ajoute|cree|supprime|deplace|decale|termine|planifie|modifie|reporte|coche|enregistre|annule|retire|classe|affecte)(?:e?s?)?';
+const RECEIPT_CLAIM = new RegExp(`(?:^|[\\r\\n])\\s*(?:[-*#>•✓✅]\\s*)*(?:${RECEIPT_VERB}\\s*[:!]|\\d+\\s+(?:taches?|sous-taches?|tags?|rappels?|listes?)\\s+(?:ajoute|cree)(?:e?s?)?\\b|(?:tag|rappel|sous-tache|tache|liste)\\s+${RECEIPT_VERB}\\s*(?:automatiquement\\b|:))`, 'i');
 
 /** A reply without any applied change must not claim one (false success = 0). */
 export function claimsAnEffect(text: string): boolean {
-  return EFFECT_CLAIM.test(text);
+  const normalized = text.normalize('NFD').replace(/\p{M}/gu, '').replace(/\*\*|__/g, '');
+  return EFFECT_CLAIM.test(normalized) || RECEIPT_CLAIM.test(normalized);
 }

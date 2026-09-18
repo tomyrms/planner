@@ -32,7 +32,7 @@ describe('assistant turns', () => {
       const { request, snapshot } = await ask(service, me, 'Demain rappelle-moi d’appeler le garage vers 17h.');
       expect(snapshot).toMatchObject({ status: 'completed', riskClass: 'R1', error: null, proposal: null });
       expect(snapshot.messages.map((message: any) => [message.role, message.kind])).toEqual([['user', 'text'], ['assistant', 'action_result']]);
-      expect(snapshot.messages[1].text).toBe('Ajouté : Appeler le garage — demain 17:00\nRappel : à l’heure prévue');
+      expect(snapshot.messages[1].text).toBe('Ajouté : Appeler le garage · demain 17:00\nRappel : à l’heure prévue');
       const [result] = snapshot.results;
       expect(result).toMatchObject({ commandType: 'task.create', aggregateType: 'task', revision: 1, noop: false });
       expect(snapshot.undo).toEqual({ actionId: result.actionId, state: 'available', expiresAt: new Date(NOW.getTime() + 24 * 3600_000).toISOString() });
@@ -77,7 +77,7 @@ describe('assistant turns', () => {
       const lying = assistantFor(db.pool, [reply('J’ai ajouté la tâche, c’est fait.')]);
       const { snapshot: guarded } = await ask(lying.service, me, 'Ajoute du lait.');
       expect(guarded).toMatchObject({ status: 'completed', riskClass: 'R0' });
-      expect(guarded.messages[1].text).toBe('Je n’ai effectué aucune modification. Peux-tu préciser ce que tu veux changer ?');
+      expect(guarded.messages[1].text).toBe('Aucune modification n’a été enregistrée dans ce tour. La réponse de l’assistant ne confirmait pas une action réellement effectuée.');
     });
 
     it('ends with a question or a refusal and no effect', async () => {
@@ -227,9 +227,10 @@ describe('assistant turns', () => {
       ]);
       const { snapshot } = await ask(second.service, me, 'Mets ça demain à 16h30.', { conversationId });
       expect(snapshot).toMatchObject({ status: 'completed', riskClass: 'R1' });
-      expect(snapshot.messages[1].text).toBe('Déplacé : Préparer l’exposé — sans date → demain 16:30');
+      expect(snapshot.messages[1].text).toBe('Déplacé : Préparer l’exposé · sans date → demain 16:30');
       const history = (second.provider as ScriptedProvider).requests[0]!.messages;
-      expect(history.map((message) => message.role)).toEqual(['user', 'user', 'assistant', 'user']);
+      expect(history.map((message) => message.role)).toEqual(['user', 'user', 'user']);
+      expect(history[1]!.content).toContain('"source":"server_receipt"');
     });
 
     it('reports what could not be prepared next to what was done', async () => {
@@ -252,7 +253,7 @@ describe('assistant turns', () => {
         reply(''),
       ]);
       const { snapshot: fixed } = await ask(corrected.service, me, 'Ajoute du beurre.');
-      expect(fixed.messages[1].text).toBe('Ajouté : Beurre — samedi 28 février');
+      expect(fixed.messages[1].text).toBe('Ajouté : Beurre · samedi 28 février');
     });
 
     it('limits turns per hour with a retry delay', async () => {

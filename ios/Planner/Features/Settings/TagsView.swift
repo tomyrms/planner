@@ -30,13 +30,14 @@ struct TagsView: View {
     @State private var editing: TagEditTarget?
     @State private var operation: Task<Void, Never>?
     @State private var busy = false
+    @State private var query = ""
     @State private var errorMessage: String?
 
     var body: some View {
         List {
             if catalogue.loaded {
                 Section {
-                    ForEach(catalogue.tags.filter { !$0.isDeleted }) { tag in
+                    ForEach(catalogue.tags.filter { !$0.isDeleted && TagPresentation.matches($0.name, query: query) }) { tag in
                         Button(tag.name) { editing = TagEditTarget(tag: tag) }
                             .foregroundStyle(.primary)
                             .accessibilityHint("Renommer ce tag")
@@ -54,7 +55,7 @@ struct TagsView: View {
                 } footer: {
                     Text("Un tag peut être partagé par plusieurs tâches. Le supprimer ne supprime aucune tâche.")
                 }
-                let deleted = catalogue.tags.filter(\.isDeleted)
+                let deleted = catalogue.tags.filter { $0.isDeleted && TagPresentation.matches($0.name, query: query) }
                 if !deleted.isEmpty {
                     Section("Tags supprimés") {
                         ForEach(deleted) { tag in
@@ -71,6 +72,14 @@ struct TagsView: View {
             }
         }
         .navigationTitle("Tags")
+        .searchable(text: $query, prompt: "Rechercher un tag")
+        .scrollDismissesKeyboard(.interactively)
+        .overlay {
+            if catalogue.loaded && !catalogue.failed && !query.isEmpty &&
+                !catalogue.tags.contains(where: { TagPresentation.matches($0.name, query: query) }) {
+                ContentUnavailableView.search(text: query)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Créer un tag", systemImage: "plus") { editing = TagEditTarget(tag: nil) }
@@ -103,6 +112,7 @@ struct TagsView: View {
 
 struct TagPickerView: View {
     @Binding var selection: Set<String>
+    @State private var query = ""
     @Environment(AppServices.self) private var services
     @State private var catalogue = TagCatalogStore()
     @State private var retryId = UUID()
@@ -111,14 +121,35 @@ struct TagPickerView: View {
     var body: some View {
         List {
             Section {
-                ForEach(catalogue.tags.filter { !$0.isDeleted || selection.contains($0.id) }) { tag in
-                    Toggle(isOn: binding(for: tag.id)) {
-                        VStack(alignment: .leading) {
-                            Text(tag.name)
-                            if tag.isDeleted { Text("Tag supprimé").font(.caption).foregroundStyle(.secondary) }
+                ForEach(catalogue.tags.filter {
+                    (!$0.isDeleted || selection.contains($0.id)) && TagPresentation.matches($0.name, query: query)
+                }) { tag in
+                    let selected = selection.contains(tag.id)
+                    Button {
+                        if selected { selection.remove(tag.id) } else { selection.insert(tag.id) }
+                    } label: {
+                        HStack(spacing: Spacing.md) {
+                            VStack(alignment: .leading, spacing: Spacing.xs) {
+                                Text(tag.name).foregroundStyle(.primary)
+                                if tag.isDeleted { Text("Tag supprimé").font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Spacer(minLength: Spacing.sm)
+                            if selected {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
+                            }
                         }
+                        .frame(minHeight: TouchTarget.comfort)
+                        .contentShape(Rectangle())
                     }
-                    .disabled(!selection.contains(tag.id) && (selectedActiveCount >= 10 || tag.isDeleted))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tag.name + (tag.isDeleted ? ", tag supprimé" : ""))
+                    .accessibilityValue(selected ? "Sélectionné" : "Non sélectionné")
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                    .accessibilityHint(selected ? "Retirer ce tag de la tâche" : "Ajouter ce tag à la tâche")
+                    .disabled(!selected && (selectedActiveCount >= 10 || tag.isDeleted))
                 }
                 ForEach(selection.subtracting(Set(catalogue.tags.map(\.id))).sorted(), id: \.self) { id in
                     Toggle("Tag indisponible sur cet iPhone", isOn: binding(for: id))
@@ -129,6 +160,16 @@ struct TagPickerView: View {
             }
         }
         .navigationTitle("Tags de la tâche")
+        .searchable(text: $query, prompt: "Rechercher un tag")
+        .scrollDismissesKeyboard(.interactively)
+        .overlay {
+            if catalogue.loaded && !catalogue.failed && !query.isEmpty &&
+                !catalogue.tags.contains(where: {
+                    (!$0.isDeleted || selection.contains($0.id)) && TagPresentation.matches($0.name, query: query)
+                }) {
+                ContentUnavailableView.search(text: query)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Créer un tag", systemImage: "plus") { editing = TagEditTarget(tag: nil) }

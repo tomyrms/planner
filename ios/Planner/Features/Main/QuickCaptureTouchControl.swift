@@ -53,11 +53,11 @@ final class CaptureTouchView: UIView {
         accessibilityTraits = recordingLabel == nil || sendAvailable ? .button : .staticText
         accessibilityLabel = sendAvailable ? "Envoyer le vocal" : recordingLabel ?? "Ajouter une tâche"
         if sendAvailable {
-            accessibilityHint = "Arrête l’enregistrement et envoie le message à l’assistant."
+            accessibilityHint = "Arrête et envoie le vocal sans changer d’écran."
         } else {
             accessibilityHint = recordingLabel == nil
-                ? "Touchez pour écrire une tâche. L’action Enregistrer un vocal permet de dicter."
-                : "Les boutons Arrêter et Annuler restent disponibles."
+                ? "Touchez pour écrire une tâche. Maintenez pour dicter et relâchez pour envoyer. L’action Enregistrer un vocal permet de dicter sans maintenir."
+                : "Relâchez pour envoyer, glissez à gauche pour annuler ou vers le haut pour verrouiller."
         }
         accessibilityCustomActions = recordingLabel == nil ? [
             UIAccessibilityCustomAction(name: "Enregistrer un vocal") { [weak self] _ in

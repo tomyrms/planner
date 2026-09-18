@@ -30,14 +30,26 @@ final class AssistantChatRenderTests: XCTestCase {
         try attach(AssistantChatPreview(kind: .answer), name: "13-answer-emphasis-light")
         try attach(TaskTagsPreview(), name: "14-task-tags-light")
         try attach(TaskTagsPreview(), name: "15-task-tags-dark-accessibility3", appearance: .dark, typeSize: .accessibility3)
+        try attach(TaskTagsPreview(), name: "16-task-tags-narrow", width: 320)
+        try attach(
+            VoiceRecordingControls(elapsed: 12, levels: [0.2, 0.5, 0.8], onCancel: {}, onSend: {}).padding(),
+            name: "17-chat-recording-light"
+        )
+        try attach(
+            VoiceRecordingControls(elapsed: 12, levels: [0.2, 0.5, 0.8], isLocked: true, showsSend: false, onCancel: {}, onSend: {}).padding(),
+            name: "18-locked-recording-dark", appearance: .dark
+        )
+        try attach(
+            VoiceRecordingControls(elapsed: 12, levels: [], onCancel: {}, onSend: {}).padding(),
+            name: "19-recording-accessibility3", typeSize: .accessibility3, width: 320
+        )
     }
 
     @MainActor
     private func attach<Content: View>(
         _ content: Content, name: String, appearance: ColorScheme = .light,
-        typeSize: DynamicTypeSize = .large
+        typeSize: DynamicTypeSize = .large, width: CGFloat = 393
     ) throws {
-        let width: CGFloat = 393
         // The live timeline scrolls; its pure preview uses a stack. Give large-text component
         // boards room to expand vertically instead of manufacturing truncation in that fixture.
         let height: CGFloat = typeSize.isAccessibilitySize ? 1_600 : 852

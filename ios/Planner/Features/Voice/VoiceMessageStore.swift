@@ -63,7 +63,7 @@ final class VoiceMessageStore {
     @ObservationIgnored private var abandonments: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var recordingConversation: String?
     @ObservationIgnored private var recordingIntent: UUID?
-    /// Explicit send on the locked capture belongs to this recording, never to an older draft.
+    /// Release/send consent belongs to this recording, never to an older draft.
     @ObservationIgnored private var sendAfterRecordingIntent: UUID?
     @ObservationIgnored private var stopped = false
     @ObservationIgnored private var recoverySuspended = false
@@ -159,7 +159,7 @@ final class VoiceMessageStore {
         handle(outcome, intent: intent)
     }
 
-    /// The locked capture's Send button. Finalize and persist before admitting the store-owned
+    /// Hold release, locked arrow, or chat Send. Finalize and persist before admitting the store-owned
     /// operation; the caller can remove its recording controls without waiting for the network.
     func stopRecordingAndSend() async {
         guard !stopped, !recoverySuspended, !Task.isCancelled, phase == .recording,

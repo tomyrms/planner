@@ -65,13 +65,6 @@ struct TaskRow: View {
         let occurrence = self.occurrence
         VStack(alignment: .leading, spacing: 0) {
             header(occurrence)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilitySentence(occurrence))
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { open(occurrence) }
-                .accessibilityActions { menu(occurrence, withLists: false) }
-            TaskTagLinks(taskId: task.id)
-                .padding(.leading, context == .trash ? 0 : TouchTarget.comfort + Spacing.md)
             if subtasksExpanded && !task.subtasks.isEmpty {
                 TaskSubtaskList(subtasks: task.subtasks)
                     .padding(.leading, context == .trash ? 0 : TouchTarget.comfort + Spacing.md)
@@ -134,6 +127,7 @@ struct TaskRow: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!canCheck(occurrence))
+                .accessibilityLabel("\(checkTitle) « \(task.title) »")
                 .sensoryFeedback(.impact(weight: .light), trigger: task.isCompleted)
             }
             Button { open(occurrence) } label: {
@@ -160,6 +154,11 @@ struct TaskRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySentence(occurrence))
+            .accessibilityAddTraits(.isButton)
+            .accessibilityActions { menu(occurrence, withLists: false) }
+            TaskTagLinks(taskId: task.id)
             if !task.subtasks.isEmpty {
                 TaskSubtaskDisclosureButton(taskTitle: task.title, subtasks: task.subtasks, isExpanded: $subtasksExpanded)
             }

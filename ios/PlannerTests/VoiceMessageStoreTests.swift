@@ -367,6 +367,28 @@ struct VoiceMessageStoreTests {
         #expect(recorder.startCount == 0)
     }
 
+    @Test func releaseOfAHoldSendsTheNewVocalExactlyOnce() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(reads: [], upload: .success(snapshot("completed", text: "Créer une tâche")), echoesRequestId: true)
+        let assistant = FakeVoiceAssistant()
+        let recorder = FakeVoiceRecorder()
+        let store = recordingStore(fixture, api: api, assistant: assistant, recorder: recorder)
+        defer { store.stop() }
+        var gesture = QuickCaptureGesture()
+        #expect(gesture.begin() == .start)
+        let started = await store.startRecording()
+        #expect(started)
+        if gesture.release() == .send { await store.stopRecordingAndSend() }
+        #expect(gesture.release() == nil)
+        let completed = await observe { store.phase == .idle && assistant.accepted.count == 1 }
+        #expect(completed)
+        #expect(recorder.stopCount == 1)
+        #expect(await api.calls == ["GET", "POST"])
+        #expect(assistant.accepted.count == 1)
+        #expect(store.draft == nil)
+    }
+
     @Test func explicitLockedSendAdmitsOneOwnedOperationWithoutWaitingForTheNetwork() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

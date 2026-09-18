@@ -228,46 +228,6 @@ struct EmptyAssistantHint: View {
     }
 }
 
-struct ChatRecordingBar: View {
-    let elapsed: TimeInterval
-    let levels: [Float]
-    let onCancel: () -> Void
-    let onStop: () -> Void
-    @Environment(\.dynamicTypeSize) private var typeSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: "record.circle")
-                    .foregroundStyle(.red)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Enregistrement").font(.subheadline.weight(.medium))
-                    Text(VoiceRecorderBar.clock(elapsed) + " / 2:00")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                if !typeSize.isAccessibilitySize && !reduceMotion {
-                    VoiceInputLevel(levels: levels)
-                        .frame(maxWidth: 80, minHeight: 20, maxHeight: 20)
-                        .accessibilityHidden(true)
-                }
-            }
-            ChatActions(alignment: .leading) {
-                Button("Annuler", role: .cancel, action: onCancel)
-                    .frame(minHeight: TouchTarget.comfort)
-                Button("Arrêter", systemImage: "stop.fill", action: onStop)
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .frame(minHeight: TouchTarget.comfort)
-            }
-            .font(.subheadline)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Enregistrement en cours, " + VoiceRecorderBar.clock(elapsed))
-    }
-}
-
 struct ChatVoiceDraftContent<Actions: View>: View {
     let duration: String
     let status: String?
@@ -333,10 +293,10 @@ struct AssistantChatPreview: View {
             ChatComposerSurface {
                 VStack(spacing: Spacing.xs) {
                     if kind == .voice {
-                        ChatVoiceDraftContent(duration: "0:08", status: nil, transcript: nil) {
-                            Button("Envoyer le vocal", action: {}).frame(minHeight: 44)
-                            Button("Supprimer", role: .destructive, action: {}).frame(minHeight: 44)
-                        }
+                        VoiceRecordingControls(
+                            elapsed: 8, levels: [0.2, 0.4, 0.8, 0.3],
+                            onCancel: {}, onSend: {}
+                        )
                         .padding(Spacing.sm)
                         Divider().padding(.horizontal, Spacing.sm)
                     }
@@ -402,7 +362,7 @@ struct AssistantChatPreview: View {
         case .answer:
             ChatUserBubble(text: "Quelles tâches sont prévues aujourd’hui ?")
             ChatReplyGroup(style: .text) {
-                ChatAssistantText(text: "Voici les tâches prévues aujourd’hui :\n\n• **Préparer le cours** — à 17 h\n• **Appeler le garage** — sans heure\n\nTu peux ouvrir chaque tâche pour voir ses détails.")
+                ChatAssistantText(text: "Voici les tâches prévues aujourd’hui :\n\n• **Préparer le cours** : à 17 h\n• **Appeler le garage** : sans heure\n\nTu peux ouvrir chaque tâche pour voir ses détails.")
             }
         }
     }
