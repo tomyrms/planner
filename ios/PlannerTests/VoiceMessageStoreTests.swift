@@ -370,7 +370,13 @@ struct VoiceMessageStoreTests {
     @Test func releaseOfAHoldSendsTheNewVocalExactlyOnce() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
-        let api = FakeVoiceAPI(reads: [], upload: .success(snapshot("completed", text: "Créer une tâche")), echoesRequestId: true)
+        // The preflight GET for a new recording returns 404 before the first upload.
+        // Empty scripted reads mean an invalid response, not an absent transcription.
+        let api = FakeVoiceAPI(
+            reads: [.failure(.http(status: 404, code: "TRANSCRIPTION_NOT_FOUND", retryAfter: nil,
+                                  serverGeneration: nil, minimumVersion: nil, message: nil))],
+            upload: .success(snapshot("completed", text: "Créer une tâche")), echoesRequestId: true
+        )
         let assistant = FakeVoiceAssistant()
         let recorder = FakeVoiceRecorder()
         let store = recordingStore(fixture, api: api, assistant: assistant, recorder: recorder)
@@ -387,6 +393,36 @@ struct VoiceMessageStoreTests {
         #expect(await api.calls == ["GET", "POST"])
         #expect(assistant.accepted.count == 1)
         #expect(store.draft == nil)
+    }
+
+    @Test func invalidPreflightResponseKeepsTheNewVocalWithoutUploading() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let api = FakeVoiceAPI(
+            reads: [.failure(.invalidResponse)],
+            upload: .success(snapshot("completed", text: "Créer une tâche")), echoesRequestId: true
+        )
+        let assistant = FakeVoiceAssistant()
+        let recorder = FakeVoiceRecorder()
+        let store = recordingStore(fixture, api: api, assistant: assistant, recorder: recorder)
+        defer { store.stop() }
+        let started = await store.startRecording()
+        #expect(started)
+        await store.stopRecordingAndSend()
+        let settled = await observe { store.phase == .idle }
+        #expect(settled)
+        #expect(recorder.stopCount == 1)
+        #expect(await api.calls == ["GET"])
+        #expect(await api.uploadIds.isEmpty)
+        #expect(assistant.accepted.isEmpty)
+        let saved = try #require(store.draft)
+        #expect(saved.state == .ready)
+        #expect(saved.transcript == nil)
+        #expect(store.notice?.contains("INVALID_RESPONSE") == true)
+        #expect(FileManager.default.fileExists(atPath: fixture.directory.appending(path: saved.fileName).path(percentEncoded: false)))
+        let data = try #require(fixture.defaults.data(forKey: "voice.draft"))
+        let persisted = try JSONDecoder().decode(VoiceDraft.self, from: data)
+        #expect(persisted == saved)
     }
 
     @Test func explicitLockedSendAdmitsOneOwnedOperationWithoutWaitingForTheNetwork() async throws {
